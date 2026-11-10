@@ -60,36 +60,29 @@ java -jar target/cms.jar
 
 ### 1.5 MySQL 9.5 实机兼容验证
 
-为避免使用本机 3306 服务的未知 root 凭据，使用同一台机器上的 MySQL 9.5.0 二进制初始化了一个**隔离测试实例**（端口 3307，数据目录位于 `target/mysql95-test`），不影响现有 MySQL95 服务：
+使用本机已安装的 **MySQL Community Server 9.5.0（127.0.0.1:3306）** 完成建表、初始化、应用启动和浏览器验收。数据库账号凭据由部署者提供，仅通过环境变量传给应用，不写入仓库或本文档。
 
 ```bash
-# 初始化隔离实例（无默认密码，仅本机测试）
-mysqld --no-defaults --initialize-insecure \
-  --basedir="C:/Program Files/MySQL/MySQL Server 9.5" \
-  --datadir="target/mysql95-test/data"
+# Windows 控制台需显式指定 utf8mb4，否则含中文的 INSERT 可能报 1366
+mysql --no-defaults --default-character-set=utf8mb4 -uroot -p < sql/01_schema.sql
+mysql --no-defaults --default-character-set=utf8mb4 -uroot -p < sql/02_data.sql
 
-# 启动隔离实例
-mysqld --no-defaults --port=3307 --mysqlx-port=33070 \
-  --datadir="target/mysql95-test/data"
-
-# 导入 MySQL 9.5 脚本
-mysql --no-defaults -h127.0.0.1 -P3307 -uroot < sql/01_schema.sql
-mysql --no-defaults -h127.0.0.1 -P3307 -uroot < sql/02_data.sql
-
-# 使用 MySQL profile 启动应用
-SPRING_PROFILES_ACTIVE=mysql DB_HOST=127.0.0.1 DB_PORT=3307 \
-DB_NAME=cms_db DB_USERNAME=root DB_PASSWORD='' java -jar target/cms.jar
+# 使用 MySQL profile 启动应用；DB_PASSWORD 由部署者在命令行/环境中注入
+SPRING_PROFILES_ACTIVE=mysql DB_HOST=127.0.0.1 DB_PORT=3306 \
+DB_NAME=cms_db DB_USERNAME=root DB_PASSWORD='<部署者密码>' java -jar target/cms.jar
 ```
 
 验证结果：
 
 | 项目 | 结果 |
 | --- | --- |
-| 服务器版本 | MySQL 9.5.0 Community Server，端口 3307 |
+| 服务器版本 | MySQL 9.5.0 Community Server，端口 3306 |
 | 建表 | 成功，8 张表 |
 | 种子数据 | 5 个用户、6 篇文章、13 个权限点 |
 | Connector/J | 9.5.0，`com.mysql.cj.jdbc.Driver` 正常加载 |
+| 数据库连接 | `information_schema.PROCESSLIST` 中确认 5 个 Druid 连接指向 `cms_db` |
 | 应用启动 | `Started CmsApplication`，`/api/health` 返回 200 |
+| 接口验证 | `admin` 登录 200，权限点齐全；文章列表返回 6 条种子数据 |
 | 浏览器冒烟 | `UI_SMOKE_OK`，完整文章审核发布流程通过 |
 | 自动化测试 | 22 个测试通过（仍使用 H2，Connector/J 9.5 同在类路径） |
 
@@ -224,7 +217,7 @@ log masking OK
 
 ## 7. 未覆盖与风险说明
 
-1. **MySQL 运行验证**：已在隔离的 MySQL 9.5.0 实例上完成建表、初始化、应用启动和浏览器全流程冒烟（见 1.5 节）。本机 3306 的 MySQL95 服务凭据未知，未进行猜测或暴力尝试；正式部署时只需用实际的 `DB_HOST/DB_PORT/DB_USERNAME/DB_PASSWORD` 连接该服务即可。
+1. **MySQL 运行验证**：已在本机 3306 的 MySQL 9.5.0 服务上完成建表、初始化、应用启动、登录/文章接口验证和浏览器全流程冒烟（见 1.5 节）。部署到其他环境时，仍需按实际的 `DB_HOST/DB_PORT/DB_USERNAME/DB_PASSWORD` 注入连接信息，且不要把密码提交到版本库。
 2. **并发压力**：仅验证乐观锁冲突，不做高并发压测；生产需补充 JMeter/Gatling 与连接池容量评估。
 3. **浏览器兼容性**：主要验证 Chrome；Firefox/Safari 未做像素级兼容测试。
 4. **CSRF**：当前使用 Session Cookie 且未引入 CSRF Token，课程内网演示可接受；若公网部署，应增加 SameSite/CSRF 防护或改用 Token 认证。

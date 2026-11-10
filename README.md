@@ -74,8 +74,9 @@ H2 数据在进程重启后重置，适合课堂演示和自动化测试。
 1. 初始化数据库：
 
 ```bash
-mysql -uroot -p < sql/01_schema.sql
-mysql -uroot -p < sql/02_data.sql
+# Windows 控制台需指定 utf8mb4，避免中文种子数据插入报 1366
+mysql --default-character-set=utf8mb4 -uroot -p < sql/01_schema.sql
+mysql --default-character-set=utf8mb4 -uroot -p < sql/02_data.sql
 ```
 
 2. 使用 MySQL profile 启动：
@@ -232,7 +233,7 @@ mvn test
 
 测试使用 H2 + MockMvc，覆盖 22 个场景：登录/注册、401/403 权限拦截、文章状态机、驳回意见、乐观锁、SQL 注入载荷、批量操作、分类树/防环/删除保护、用户与角色管理、日志脱敏与筛选。详见 [docs/TESTING.md](docs/TESTING.md)。
 
-浏览器端已通过 Playwright 冒烟验收：登录 → 新建草稿 → 提交审核 → 编辑审核 → 发布 → 详情 → 分类树 → 用户/角色/日志页面，且校验编辑角色看不到用户管理入口。同一套流程在 MySQL 9.5.0 实例上复验通过。
+浏览器端已通过 Playwright 冒烟验收：登录 → 新建草稿 → 提交审核 → 编辑审核 → 发布 → 详情 → 分类树 → 用户/角色/日志页面，且校验编辑角色看不到用户管理入口。同一套流程已在本机 MySQL 9.5.0（3306）服务上复验通过。
 
 ## 10. 文档索引
 
@@ -279,4 +280,4 @@ mvn clean package
 java -jar target/cms.jar --spring.profiles.active=mysql
 ```
 
-> 说明：自动化测试基于 JDK 17 + H2；另使用隔离的 **MySQL 9.5.0 + Connector/J 9.5.0** 实例完成建表、初始化、应用启动和浏览器全流程冒烟，详见 [docs/TESTING.md](docs/TESTING.md) 1.5 节。连接实际 MySQL 时通过 `DB_PASSWORD` 注入密码，切勿将真实密码提交到版本库。
+> 说明：自动化测试基于 JDK 17 + H2；另已在本机 **MySQL 9.5.0（3306）+ Connector/J 9.5.0** 服务上完成建表、初始化、应用启动、登录/文章接口验证和浏览器全流程冒烟，详见 [docs/TESTING.md](docs/TESTING.md) 1.5 节。连接实际 MySQL 时通过 `DB_PASSWORD` 注入密码，切勿将真实密码提交到版本库。
