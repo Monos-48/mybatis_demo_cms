@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.cms.mapper.CmsArticleMapper">
+
+    <!--
+      列表查询通过一次 JOIN 同时取回分类名和作者名，解决逐条查询分类/作者的 N+1 问题。
+      动态 SQL 全部使用 #{} 预编译参数；排序字段通过 choose 白名单硬编码，杜绝 ORDER BY 注入。
+    -->
+    <select id="selectArticlePage" resultType="com.example.cms.vo.ArticleVO">
+        SELECT a.id,
+               a.title,
+               a.summary,
+               a.category_id,
+               a.author_id,
+               a.status,
+               a.audit_remark,
+               a.publish_time,
+               a.view_count,
+               a.version,
+               a.create_time,
+               a.update_time,
+               c.name AS category_name,
+               u.nickname AS author_name
+        FROM cms_article a
+        LEFT JOIN cms_category c ON c.id = a.category_id
+        LEFT JOIN sys_user u ON u.id = a.author_id
+        WHERE a.deleted = 0
+        <if test="q.title != null and q.title != ''">
+            AND a.title LIKE CONCAT('%', #{q.title}, '%')
+        </if>
+        <if test="categoryIds != null and categoryIds.size() > 0">
+            AND a.category_id IN
+            <foreach collection="categoryIds" item="categoryId" open="(" separator="," close=")">
+                #{categoryId}
+            </foreach>
+        </if>
+        <if test="q.status != null">
+            AND a.status = #{q.status}
+        </if>
+        <if test="q.authorId != null">
+            AND a.author_id = #{q.authorId}
+        </if>
+        <if test="q.startTime != null">
+            AND a.create_time &gt;= #{q.startTime}
+        </if>
+        <if test="q.endTime != null">
+            AND a.create_time &lt; #{q.endTime}
+        </if>
+        ORDER BY
+        <choose>
+            <when test="q.sortField == 'title'">a.title</when>
+            <when test="q.sortField == 'publishTime'">a.publish_time</when>
+            <when test="q.sortField == 'viewCount'">a.view_count</when>
+            <when test="q.sortField == 'updateTime'">a.update_time</when>
+            <otherwise>a.create_time</otherwise>
+        </choose>
+        <choose>
+            <when test="q.sortOrder == 'asc'">ASC</when>
+            <otherwise>DESC</otherwise>
+        </choose>
+        , a.id DESC
+    </select>
+
+    <select id="selectDetailById" resultType="com.example.cms.vo.ArticleDetailVO">
+        SELECT a.id,
+               a.title,
+               a.summary,
+               a.content,
+               a.category_id,
+               a.author_id,
+               a.status,
+               a.audit_remark,
+               a.audit_by,
+               a.audit_time,
+               a.publish_time,
+               a.view_count,
+               a.version,
+               a.create_time,
+               a.update_time,
+               c.name AS category_name,
+               u.nickname AS author_name,
+               au.nickname AS auditor_name
+        FROM cms_article a
+        LEFT JOIN cms_category c ON c.id = a.category_id
+        LEFT JOIN sys_user u ON u.id = a.author_id
+        LEFT JOIN sys_user au ON au.id = a.audit_by
+        WHERE a.id = #{id}
+          AND a.deleted = 0
+    </select>
+
+</mapper>

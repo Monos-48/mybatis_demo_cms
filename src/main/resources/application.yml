@@ -1,0 +1,72 @@
+server:
+  port: ${SERVER_PORT:8080}
+  servlet:
+    session:
+      timeout: 30m
+      cookie:
+        http-only: true
+        same-site: lax
+  error:
+    include-message: never
+    include-stacktrace: never
+  compression:
+    enabled: true
+
+spring:
+  application:
+    name: mybatis-demo-cms
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:h2}
+  datasource:
+    type: com.alibaba.druid.pool.DruidDataSource
+    druid:
+      initial-size: 3
+      min-idle: 3
+      max-active: 20
+      max-wait: 10000
+      validation-query: SELECT 1
+      test-while-idle: true
+      test-on-borrow: false
+      filters: stat
+      stat-view-servlet:
+        enabled: true
+        url-pattern: /druid/*
+        login-username: admin
+        login-password: admin123
+        reset-enable: false
+        allow: 127.0.0.1
+      web-stat-filter:
+        enabled: true
+        url-pattern: /*
+        exclusions: "*.js,*.gif,*.jpg,*.png,*.css,*.ico,/druid/*"
+  jackson:
+    time-zone: GMT+8
+    serialization:
+      write-dates-as-timestamps: false
+  mvc:
+    throw-exception-if-no-handler-found: true
+  web:
+    resources:
+      add-mappings: true
+
+mybatis-plus:
+  mapper-locations: classpath*:/mapper/**/*.xml
+  type-aliases-package: com.example.cms.entity
+  configuration:
+    map-underscore-to-camel-case: true
+    cache-enabled: false
+  global-config:
+    banner: false
+    db-config:
+      id-type: auto
+      logic-delete-field: deleted
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+
+logging:
+  level:
+    root: INFO
+    com.example.cms: DEBUG
+    com.example.cms.mapper: DEBUG
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] %logger{36} - %msg%n"

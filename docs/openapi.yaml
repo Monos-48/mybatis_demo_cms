@@ -1,0 +1,1552 @@
+openapi: 3.0.3
+info:
+  title: Atlas CMS 内容管理系统 API
+  description: |
+    Spring Boot 2.7 + SpringMVC + MyBatis-Plus 实现的 CMS 后端接口。
+    认证方式为 Session Cookie；登录成功后 ApiFox/浏览器会自动保存 JSESSIONID。
+    所有接口统一返回 {code, message, data, timestamp}，HTTP 状态码与 code 保持一致。
+  version: 1.0.0
+  contact:
+    name: Atlas CMS
+servers:
+  - url: http://localhost:8080
+    description: 本地开发环境（H2）
+  - url: http://127.0.0.1:8080
+    description: 本地备用地址
+
+tags:
+  - name: 认证
+    description: 注册、登录、退出、当前用户
+  - name: 文章
+    description: 文章 CRUD、检索、审核状态机、批量操作
+  - name: 分类
+    description: 多级分类树与分类管理
+  - name: 用户
+    description: 用户检索、状态、角色、密码管理
+  - name: 角色权限
+    description: RBAC 角色与权限分配
+  - name: 操作日志
+    description: 操作审计检索
+  - name: 系统
+    description: 健康检查
+
+security:
+  - sessionAuth: []
+
+paths:
+  /api/health:
+    get:
+      tags: [系统]
+      summary: 健康检查
+      security: []
+      responses:
+        '200':
+          description: 服务正常
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResult'
+
+  /api/auth/login:
+    post:
+      tags: [认证]
+      summary: 登录
+      description: 校验 BCrypt 密码，成功后更换 Session 并返回角色、权限码集合。待审批或禁用账号返回 403。
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: 登录成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResult'
+              example:
+                code: 200
+                message: 登录成功
+                data:
+                  id: 1
+                  username: admin
+                  nickname: 系统管理员
+                  email: admin@cms.local
+                  roles: [ADMIN]
+                  permissions: [article:list, article:audit, user:manage]
+                timestamp: '2026-11-11 10:00:00'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/auth/register:
+    post:
+      tags: [认证]
+      summary: 注册（待审批）
+      description: 注册用户状态为 2（待审批），默认预分配 AUTHOR 角色。
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '200':
+          description: 注册成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /api/auth/me:
+    get:
+      tags: [认证]
+      summary: 当前登录用户
+      responses:
+        '200':
+          description: 当前会话身份
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/auth/logout:
+    post:
+      tags: [认证]
+      summary: 退出登录
+      responses:
+        '200':
+          description: 已退出
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmptyResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/articles:
+    get:
+      tags: [文章]
+      summary: 文章分页与高级检索
+      description: 需要 article:list。分类名和作者名通过 JOIN 一次返回。
+      x-permission: article:list
+      parameters:
+        - $ref: '#/components/parameters/PageNum'
+        - $ref: '#/components/parameters/PageSize'
+        - name: title
+          in: query
+          schema: {type: string, maxLength: 100}
+          description: 标题模糊搜索
+        - name: categoryId
+          in: query
+          schema: {type: integer, format: int64}
+          description: 分类 ID；默认包含子孙分类
+        - name: includeChildren
+          in: query
+          schema: {type: boolean, default: true}
+        - name: status
+          in: query
+          schema: {type: integer, enum: [0, 1, 2, 3, 4, 5]}
+        - name: authorId
+          in: query
+          schema: {type: integer, format: int64}
+        - name: startDate
+          in: query
+          schema: {type: string, format: date}
+        - name: endDate
+          in: query
+          schema: {type: string, format: date}
+        - name: sortField
+          in: query
+          schema:
+            type: string
+            enum: [createTime, updateTime, publishTime, viewCount, title]
+            default: createTime
+        - name: sortOrder
+          in: query
+          schema: {type: string, enum: [asc, desc], default: desc}
+      responses:
+        '200':
+          description: 分页结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArticlePageResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [文章]
+      summary: 新建文章
+      description: 需要 article:create。submitForReview=true 时直接进入待审核。
+      x-permission: article:create
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ArticleCreateRequest'
+      responses:
+        '200':
+          description: 新建成功，data 为文章 ID
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArticleIdResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/articles/{id}:
+    parameters:
+      - $ref: '#/components/parameters/PathId'
+    get:
+      tags: [文章]
+      summary: 文章详情
+      x-permission: article:list
+      responses:
+        '200':
+          description: 文章详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArticleDetailResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [文章]
+      summary: 编辑文章
+      description: 需要 article:edit；仅作者本人或 EDITOR/ADMIN，且仅草稿/已驳回可编辑。version 用于乐观锁。
+      x-permission: article:edit
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ArticleUpdateRequest'
+      responses:
+        '200':
+          description: 更新成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmptyResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+    delete:
+      tags: [文章]
+      summary: 删除文章（逻辑删除）
+      x-permission: article:delete
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmptyResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /api/articles/{id}/submit:
+    post:
+      tags: [文章]
+      summary: 提交审核
+      description: 仅草稿/已驳回状态可提交；需要 article:submit。
+      x-permission: article:submit
+      parameters:
+        - $ref: '#/components/parameters/PathId'
+      responses:
+        '200':
+          description: 已提交
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmptyResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /api/articles/{id}/audit:
+    post:
+      tags: [文章]
+      summary: 审核文章
+      description: 仅待审核可审核；驳回时 remark 必填。需要 article:audit。
+      x-permission: article:audit
+      parameters:
+        - $ref: '#/components/parameters/PathId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ArticleAuditRequest'
+      responses:
+        '200':
+          description: 审核完成
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmptyResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /api/articles/{id}/publish:
+    post:
+      tags: [文章]
+      summary: 发布文章
+      description: 仅审核通过/已下架可发布。需要 article:publish。
+      x-permission: article:publish
+      parameters:
+        - $ref: '#/components/parameters/PathId'
+      responses:
+        '200':
+          description: 发布成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmptyResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /api/articles/{id}/offline:
+    post:
+      tags: [文章]
+      summary: 下架文章
+      description: 仅已发布可下架。需要 article:offline。
+      x-permission: article:offline
+      parameters:
+        - $ref: '#/components/parameters/PathId'
+      responses:
+        '200':
+          description: 下架成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmptyResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /api/articles/batch/publish:
+    post:
+      tags: [文章]
+      summary: 批量发布
+      description: 先整体校验状态，任一不合法整批回滚。需要 article:publish。
+      x-permission: article:publish
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BatchArticleRequest'
+      responses:
+        '200':
+          description: 批量发布成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmptyResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /api/articles/batch/offline:
+    post:
+      tags: [文章]
+      summary: 批量下架
+      x-permission: article:offline
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BatchArticleRequest'
+      responses:
+        '200':
+          description: 批量下架成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmptyResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /api/categories/tree:
+    get:
+      tags: [分类]
+      summary: 分类树
+      x-permission: category:list
+      parameters:
+        - name: enabledOnly
+          in: query
+          schema: {type: boolean, default: false}
+          description: 仅返回启用分类（文章编辑器使用）
+      responses:
+        '200':
+          description: 递归分类树
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CategoryTreeResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/categories:
+    post:
+      tags: [分类]
+      summary: 新建分类
+      x-permission: category:manage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CategorySaveRequest'
+      responses:
+        '200':
+          description: 新建成功，data 为分类 ID
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IdResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /api/categories/{id}:
+    parameters:
+      - $ref: '#/components/parameters/PathId'
+    get:
+      tags: [分类]
+      summary: 分类详情
+      x-permission: category:list
+      responses:
+        '200':
+          description: 分类详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CategoryResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [分类]
+      summary: 编辑/移动分类
+      description: 不能移动到自己或子孙节点下；同级名称唯一。
+      x-permission: category:manage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CategorySaveRequest'
+      responses:
+        '200':
+          description: 更新成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmptyResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+    delete:
+      tags: [分类]
+      summary: 删除分类
+      description: 存在子分类或文章时拒绝删除。
+      x-permission: category:manage
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmptyResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/categories/{id}/status:
+    put:
+      tags: [分类]
+      summary: 启用/停用分类
+      x-permission: category:manage
+      parameters:
+        - $ref: '#/components/parameters/PathId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StatusRequest'
+      responses:
+        '200':
+          description: 状态更新成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmptyResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/users:
+    get:
+      tags: [用户]
+      summary: 用户分页检索
+      description: 需要 user:manage；角色列表使用批量 IN 查询组装。
+      x-permission: user:manage
+      parameters:
+        - $ref: '#/components/parameters/PageNum'
+        - $ref: '#/components/parameters/PageSize'
+        - name: keyword
+          in: query
+          schema: {type: string, maxLength: 50}
+          description: 用户名/昵称模糊搜索
+        - name: status
+          in: query
+          schema: {type: integer, enum: [0, 1, 2]}
+        - name: roleId
+          in: query
+          schema: {type: integer, format: int64}
+      responses:
+        '200':
+          description: 用户分页
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserPageResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [用户]
+      summary: 管理员新增用户
+      x-permission: user:manage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserCreateRequest'
+      responses:
+        '200':
+          description: 创建成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /api/users/{id}:
+    parameters:
+      - $ref: '#/components/parameters/PathId'
+    get:
+      tags: [用户]
+      summary: 用户详情
+      x-permission: user:manage
+      responses:
+        '200':
+          description: 用户详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [用户]
+      summary: 删除用户
+      description: 不能删除当前登录账号。
+      x-permission: user:manage
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmptyResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/users/{id}/status:
+    put:
+      tags: [用户]
+      summary: 变更用户状态（含审批）
+      x-permission: user:manage
+      parameters:
+        - $ref: '#/components/parameters/PathId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StatusRequest'
+      responses:
+        '200':
+          description: 更新成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmptyResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/users/{id}/roles:
+    put:
+      tags: [用户]
+      summary: 重新分配用户角色
+      description: 不能修改当前登录账号自己的角色。
+      x-permission: user:manage
+      parameters:
+        - $ref: '#/components/parameters/PathId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserRolesRequest'
+      responses:
+        '200':
+          description: 分配成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmptyResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/users/{id}/password:
+    put:
+      tags: [用户]
+      summary: 重置用户密码
+      x-permission: user:manage
+      parameters:
+        - $ref: '#/components/parameters/PathId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PasswordResetRequest'
+      responses:
+        '200':
+          description: 重置成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmptyResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/roles:
+    get:
+      tags: [角色权限]
+      summary: 角色列表
+      description: 返回每个角色的 permissionIds，用于权限配置页面。
+      x-permission: role:manage
+      responses:
+        '200':
+          description: 角色列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoleListResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [角色权限]
+      summary: 新建角色
+      x-permission: role:manage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RoleSaveRequest'
+      responses:
+        '200':
+          description: 创建成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoleResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /api/roles/{id}:
+    parameters:
+      - $ref: '#/components/parameters/PathId'
+    put:
+      tags: [角色权限]
+      summary: 编辑角色
+      x-permission: role:manage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RoleSaveRequest'
+      responses:
+        '200':
+          description: 更新成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoleResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+    delete:
+      tags: [角色权限]
+      summary: 删除角色
+      description: 内置 ADMIN 角色或仍绑定用户的角色不可删除。
+      x-permission: role:manage
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmptyResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/roles/{id}/permissions:
+    put:
+      tags: [角色权限]
+      summary: 分配角色权限
+      x-permission: role:manage
+      parameters:
+        - $ref: '#/components/parameters/PathId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RolePermissionRequest'
+      responses:
+        '200':
+          description: 分配成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmptyResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/permissions:
+    get:
+      tags: [角色权限]
+      summary: 全部权限点
+      x-permission: role:manage
+      responses:
+        '200':
+          description: 权限点列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PermissionListResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/logs:
+    get:
+      tags: [操作日志]
+      summary: 操作日志分页检索
+      x-permission: log:view
+      parameters:
+        - $ref: '#/components/parameters/PageNum'
+        - $ref: '#/components/parameters/PageSize'
+        - name: module
+          in: query
+          schema: {type: string, maxLength: 50}
+        - name: username
+          in: query
+          schema: {type: string, maxLength: 50}
+        - name: success
+          in: query
+          schema: {type: integer, enum: [0, 1]}
+        - name: startDate
+          in: query
+          schema: {type: string, format: date}
+        - name: endDate
+          in: query
+          schema: {type: string, format: date}
+      responses:
+        '200':
+          description: 日志分页
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogPageResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+components:
+  securitySchemes:
+    sessionAuth:
+      type: apiKey
+      in: cookie
+      name: JSESSIONID
+
+  parameters:
+    PageNum:
+      name: pageNum
+      in: query
+      schema: {type: integer, minimum: 1, default: 1}
+      description: 页码，从 1 开始
+    PageSize:
+      name: pageSize
+      in: query
+      schema: {type: integer, minimum: 1, maximum: 100, default: 10}
+      description: 每页条数，最大 100
+    PathId:
+      name: id
+      in: path
+      required: true
+      schema: {type: integer, format: int64}
+
+  responses:
+    BadRequest:
+      description: 参数校验失败
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResult'
+          example:
+            code: 400
+            message: title：标题长度须为 2-100 个字符
+            data: null
+            timestamp: '2026-11-11 10:00:00'
+    Unauthorized:
+      description: 未登录或登录已过期
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResult'
+          example:
+            code: 401
+            message: 未登录或登录已过期
+            data: null
+            timestamp: '2026-11-11 10:00:00'
+    Forbidden:
+      description: 没有接口权限
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResult'
+          example:
+            code: 403
+            message: '没有操作权限：article:audit'
+            data: null
+            timestamp: '2026-11-11 10:00:00'
+    NotFound:
+      description: 资源不存在
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResult'
+          example:
+            code: 404
+            message: 文章不存在
+            data: null
+            timestamp: '2026-11-11 10:00:00'
+    Conflict:
+      description: 状态冲突或数据重复
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResult'
+          example:
+            code: 409
+            message: 文章已被其他用户修改，请刷新后重试
+            data: null
+            timestamp: '2026-11-11 10:00:00'
+
+  schemas:
+    ResultBase:
+      type: object
+      required: [code, message, timestamp]
+      properties:
+        code:
+          type: integer
+          example: 200
+        message:
+          type: string
+          example: 操作成功
+        data:
+          nullable: true
+        timestamp:
+          type: string
+          example: '2026-11-11 10:00:00'
+
+    ErrorResult:
+      type: object
+      properties:
+        code:
+          type: integer
+        message:
+          type: string
+        data:
+          nullable: true
+        timestamp:
+          type: string
+
+    EmptyResult:
+      allOf:
+        - $ref: '#/components/schemas/ResultBase'
+        - type: object
+          properties:
+            data:
+              nullable: true
+              example: null
+
+    IdResult:
+      allOf:
+        - $ref: '#/components/schemas/ResultBase'
+        - type: object
+          properties:
+            data:
+              type: integer
+              format: int64
+
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+          minLength: 4
+          maxLength: 32
+          example: admin
+        password:
+          type: string
+          minLength: 8
+          maxLength: 32
+          example: admin123
+
+    RegisterRequest:
+      type: object
+      required: [username, password, nickname]
+      properties:
+        username:
+          type: string
+          pattern: '^[A-Za-z0-9_]{4,32}$'
+          example: new_author
+        password:
+          type: string
+          pattern: '^(?=.*[A-Za-z])(?=.*\d).{8,32}$'
+          example: author123
+        nickname:
+          type: string
+          minLength: 2
+          maxLength: 20
+          example: 新作者
+        email:
+          type: string
+          format: email
+          maxLength: 100
+          example: new@example.com
+
+    LoginVO:
+      type: object
+      properties:
+        id: {type: integer, format: int64}
+        username: {type: string}
+        nickname: {type: string}
+        email: {type: string}
+        roles:
+          type: array
+          items: {type: string}
+        permissions:
+          type: array
+          items: {type: string}
+
+    RoleBriefVO:
+      type: object
+      properties:
+        id: {type: integer, format: int64}
+        roleName: {type: string}
+        roleCode: {type: string}
+
+    UserVO:
+      type: object
+      properties:
+        id: {type: integer, format: int64}
+        username: {type: string}
+        nickname: {type: string}
+        email: {type: string, nullable: true}
+        status: {type: integer, enum: [0, 1, 2]}
+        statusText: {type: string}
+        lastLoginTime: {type: string, nullable: true}
+        createTime: {type: string}
+        roleIds:
+          type: array
+          items: {type: integer, format: int64}
+        roles:
+          type: array
+          items:
+            $ref: '#/components/schemas/RoleBriefVO'
+
+    ArticleVO:
+      type: object
+      properties:
+        id: {type: integer, format: int64}
+        title: {type: string}
+        summary: {type: string, nullable: true}
+        categoryId: {type: integer, format: int64}
+        categoryName: {type: string, nullable: true}
+        authorId: {type: integer, format: int64}
+        authorName: {type: string, nullable: true}
+        status: {type: integer, enum: [0, 1, 2, 3, 4, 5]}
+        statusText: {type: string}
+        auditRemark: {type: string, nullable: true}
+        publishTime: {type: string, nullable: true}
+        viewCount: {type: integer}
+        version: {type: integer}
+        createTime: {type: string}
+        updateTime: {type: string}
+
+    ArticleDetailVO:
+      allOf:
+        - $ref: '#/components/schemas/ArticleVO'
+        - type: object
+          properties:
+            content: {type: string}
+            auditBy: {type: integer, format: int64, nullable: true}
+            auditorName: {type: string, nullable: true}
+            auditTime: {type: string, nullable: true}
+
+    ArticleCreateRequest:
+      type: object
+      required: [title, content, categoryId]
+      properties:
+        title:
+          type: string
+          minLength: 2
+          maxLength: 100
+          example: 企业级 CMS 的权限设计
+        summary:
+          type: string
+          maxLength: 500
+          nullable: true
+        content:
+          type: string
+          minLength: 10
+          maxLength: 100000
+        categoryId:
+          type: integer
+          format: int64
+          example: 4
+        submitForReview:
+          type: boolean
+          default: false
+
+    ArticleUpdateRequest:
+      allOf:
+        - $ref: '#/components/schemas/ArticleCreateRequest'
+        - type: object
+          required: [version]
+          properties:
+            version:
+              type: integer
+              description: 乐观锁版本号，取详情/列表返回的 version
+              example: 0
+
+    ArticleAuditRequest:
+      type: object
+      required: [approved]
+      properties:
+        approved:
+          type: boolean
+          example: true
+        remark:
+          type: string
+          maxLength: 500
+          description: 驳回时必填
+          nullable: true
+
+    BatchArticleRequest:
+      type: object
+      required: [articleIds]
+      properties:
+        articleIds:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items: {type: integer, format: int64}
+          example: [1, 2, 3]
+
+    CategorySaveRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 2
+          maxLength: 50
+          example: 云原生
+        parentId:
+          type: integer
+          format: int64
+          minimum: 0
+          default: 0
+          description: 0 表示顶级
+        sort:
+          type: integer
+          minimum: 0
+          maximum: 9999
+          default: 0
+        status:
+          type: integer
+          enum: [0, 1]
+          default: 1
+        description:
+          type: string
+          maxLength: 200
+          nullable: true
+
+    StatusRequest:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: integer
+          enum: [0, 1]
+
+    CategoryVO:
+      type: object
+      properties:
+        id: {type: integer, format: int64}
+        name: {type: string}
+        parentId: {type: integer, format: int64}
+        sort: {type: integer}
+        status: {type: integer, enum: [0, 1]}
+        statusText: {type: string}
+        description: {type: string, nullable: true}
+        createTime: {type: string}
+        children:
+          type: array
+          items:
+            $ref: '#/components/schemas/CategoryVO'
+
+    UserCreateRequest:
+      type: object
+      required: [username, password, nickname]
+      properties:
+        username:
+          type: string
+          pattern: '^[A-Za-z0-9_]{4,32}$'
+        password:
+          type: string
+          pattern: '^(?=.*[A-Za-z])(?=.*\d).{8,32}$'
+        nickname:
+          type: string
+          minLength: 2
+          maxLength: 20
+        email:
+          type: string
+          format: email
+          maxLength: 100
+          nullable: true
+        status:
+          type: integer
+          enum: [0, 1]
+          default: 1
+        roleIds:
+          type: array
+          maxItems: 10
+          items: {type: integer, format: int64}
+
+    UserRolesRequest:
+      type: object
+      required: [roleIds]
+      properties:
+        roleIds:
+          type: array
+          maxItems: 10
+          items: {type: integer, format: int64}
+
+    PasswordResetRequest:
+      type: object
+      required: [newPassword]
+      properties:
+        newPassword:
+          type: string
+          pattern: '^(?=.*[A-Za-z])(?=.*\d).{8,32}$'
+
+    RoleSaveRequest:
+      type: object
+      required: [roleName, roleCode]
+      properties:
+        roleName:
+          type: string
+          minLength: 2
+          maxLength: 30
+        roleCode:
+          type: string
+          pattern: '^[A-Z][A-Z0-9_]{1,29}$'
+          example: REVIEWER
+        status:
+          type: integer
+          enum: [0, 1]
+          default: 1
+        remark:
+          type: string
+          maxLength: 200
+          nullable: true
+
+    RolePermissionRequest:
+      type: object
+      required: [permissionIds]
+      properties:
+        permissionIds:
+          type: array
+          maxItems: 100
+          items: {type: integer, format: int64}
+
+    RoleVO:
+      type: object
+      properties:
+        id: {type: integer, format: int64}
+        roleName: {type: string}
+        roleCode: {type: string}
+        status: {type: integer}
+        remark: {type: string, nullable: true}
+        createTime: {type: string}
+        permissionIds:
+          type: array
+          items: {type: integer, format: int64}
+
+    PermissionVO:
+      type: object
+      properties:
+        id: {type: integer, format: int64}
+        permName: {type: string}
+        permCode: {type: string}
+        uri: {type: string, nullable: true}
+        method: {type: string, nullable: true}
+
+    LogVO:
+      type: object
+      properties:
+        id: {type: integer, format: int64}
+        userId: {type: integer, format: int64, nullable: true}
+        username: {type: string, nullable: true}
+        module: {type: string, nullable: true}
+        operation: {type: string, nullable: true}
+        method: {type: string, nullable: true}
+        requestUri: {type: string, nullable: true}
+        requestMethod: {type: string, nullable: true}
+        params: {type: string, nullable: true, description: 密码字段已脱敏}
+        ip: {type: string, nullable: true}
+        costTime: {type: integer, format: int64, nullable: true}
+        success: {type: integer, enum: [0, 1]}
+        errorMsg: {type: string, nullable: true}
+        createTime: {type: string}
+
+    ArticlePageData:
+      type: object
+      properties:
+        records:
+          type: array
+          items:
+            $ref: '#/components/schemas/ArticleVO'
+        total: {type: integer, format: int64}
+        pageNum: {type: integer, format: int64}
+        pageSize: {type: integer, format: int64}
+        pages: {type: integer, format: int64}
+
+    UserPageData:
+      allOf:
+        - $ref: '#/components/schemas/ArticlePageData'
+        - type: object
+          properties:
+            records:
+              type: array
+              items:
+                $ref: '#/components/schemas/UserVO'
+
+    LogPageData:
+      allOf:
+        - $ref: '#/components/schemas/ArticlePageData'
+        - type: object
+          properties:
+            records:
+              type: array
+              items:
+                $ref: '#/components/schemas/LogVO'
+
+    LoginResult:
+      allOf:
+        - $ref: '#/components/schemas/ResultBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/LoginVO'
+
+    UserResult:
+      allOf:
+        - $ref: '#/components/schemas/ResultBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/UserVO'
+
+    ArticlePageResult:
+      allOf:
+        - $ref: '#/components/schemas/ResultBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ArticlePageData'
+
+    ArticleDetailResult:
+      allOf:
+        - $ref: '#/components/schemas/ResultBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ArticleDetailVO'
+
+    ArticleIdResult:
+      allOf:
+        - $ref: '#/components/schemas/ResultBase'
+        - type: object
+          properties:
+            data:
+              type: integer
+              format: int64
+
+    CategoryTreeResult:
+      allOf:
+        - $ref: '#/components/schemas/ResultBase'
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: '#/components/schemas/CategoryVO'
+
+    CategoryResult:
+      allOf:
+        - $ref: '#/components/schemas/ResultBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/CategoryVO'
+
+    UserPageResult:
+      allOf:
+        - $ref: '#/components/schemas/ResultBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/UserPageData'
+
+    RoleListResult:
+      allOf:
+        - $ref: '#/components/schemas/ResultBase'
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: '#/components/schemas/RoleVO'
+
+    RoleResult:
+      allOf:
+        - $ref: '#/components/schemas/ResultBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/RoleVO'
+
+    PermissionListResult:
+      allOf:
+        - $ref: '#/components/schemas/ResultBase'
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: '#/components/schemas/PermissionVO'
+
+    LogPageResult:
+      allOf:
+        - $ref: '#/components/schemas/ResultBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/LogPageData'
+
+    HealthResult:
+      allOf:
+        - $ref: '#/components/schemas/ResultBase'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                status: {type: string}
+                application: {type: string}
+                time: {type: string}

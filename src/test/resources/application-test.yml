@@ -1,0 +1,14 @@
+# 测试环境覆盖项：MockMvc 没有真实 Servlet 容器初始化过程，关闭 Druid Web 统计。
+spring:
+  datasource:
+    druid:
+      web-stat-filter:
+        enabled: false
+      stat-view-servlet:
+        enabled: false
+
+logging:
+  level:
+    root: WARN
+    com.example.cms: INFO
+    com.example.cms.mapper: WARN
