@@ -49,7 +49,7 @@
 ```bash
 # 在项目根目录执行
 mvn clean package -DskipTests
-java -jar target/cms.jar
+java -jar target/cms.war
 ```
 
 或者开发模式：
@@ -82,7 +82,7 @@ mysql --default-character-set=utf8mb4 -uroot -p < sql/02_data.sql
 2. 使用 MySQL profile 启动：
 
 ```bash
-java -jar target/cms.jar --spring.profiles.active=mysql
+java -jar target/cms.war --spring.profiles.active=mysql
 ```
 
 或通过环境变量覆盖连接信息：
@@ -90,10 +90,34 @@ java -jar target/cms.jar --spring.profiles.active=mysql
 ```bash
 DB_HOST=localhost DB_PORT=3306 DB_NAME=cms_db \
 DB_USERNAME=root DB_PASSWORD=你的密码 \
-java -jar target/cms.jar --spring.profiles.active=mysql
+java -jar target/cms.war --spring.profiles.active=mysql
 ```
 
 MySQL 9.5 脚本包含完整表结构、外键、索引和演示数据；`application-mysql.yml` 使用 Connector/J 9.5.0，并关闭了自动初始化，避免误覆盖生产数据。MySQL 9.5 默认认证插件为 `caching_sha2_password`，连接串已启用 `allowPublicKeyRetrieval=true`，本地演示可使用。
+
+### 3.4 部署到外部 Tomcat 9（IDEA / 独立安装）
+
+项目已打包为 **WAR**（`target/cms.war`），既可直接 `java -jar` 运行，也可部署到外部 Tomcat。
+
+> **版本限制**：Spring Boot 2.7 基于 `javax.servlet`，只能部署到 **Tomcat 9.x**。
+> Tomcat 10/11 使用 `jakarta.servlet`，启动时会因 `javax.servlet.*` 类缺失而失败；若要使用 Tomcat 10+，需要先迁移到 Spring Boot 3。
+
+**方式一：手工部署**
+
+1. 打包：`mvn clean package -DskipTests`
+2. 把 `target/cms.war` 复制到 `%CATALINA_HOME%\webapps\`
+3. 使用 **JDK 17** 启动 Tomcat 9
+4. 访问 `http://localhost:8080/cms/`（context path 由 WAR 文件名决定；改名为 `ROOT.war` 即部署到根路径）
+
+**方式二：IDEA 本地 Tomcat**
+
+1. `Run/Debug Configurations` → `+` → `Tomcat Server` → `Local`
+2. Application server 选择 **Tomcat 9.0.x**，JRE 选择 **17**（不要用 24）
+3. `Deployment` 添加 `cms:war exploded`，`Application context` 建议填 `/cms`
+4. 启动后访问 `http://localhost:8080/cms/`
+5. MySQL 环境通过 Tomcat 进程环境变量注入：`SPRING_PROFILES_ACTIVE=mysql`、`DB_HOST/DB_PORT/DB_NAME/DB_USERNAME/DB_PASSWORD`
+
+前端的静态资源使用相对路径，接口地址会根据当前 `context path` 自动拼接，因此部署在 `/cms`、`/mybatis_demo_cms_war_exploded` 或根路径都能正常登录与加载数据。更完整的排查步骤见 [docs/TOMCAT.md](docs/TOMCAT.md)。
 
 ## 4. 演示账号
 
@@ -244,6 +268,7 @@ mvn test
 | [docs/API.md](docs/API.md) | 接口说明、统一响应、错误码、权限矩阵、调用示例 |
 | [docs/openapi.yaml](docs/openapi.yaml) | OpenAPI 3.0 规范，可导入 ApiFox / Swagger UI |
 | [docs/TESTING.md](docs/TESTING.md) | 测试策略、22 个用例矩阵、浏览器验收记录 |
+| [docs/TOMCAT.md](docs/TOMCAT.md) | 本地 Tomcat 9 部署、context path 适配与常见错误排查 |
 | [docs/FINAL_REPORT_OUTLINE.md](docs/FINAL_REPORT_OUTLINE.md) | 课程设计报告提纲、评分点映射、图表清单 |
 | [docs/AI_USAGE.md](docs/AI_USAGE.md) | AI 使用声明、交互记录、人工核验清单 |
 | [docs/diagrams](docs/diagrams) | 架构图、E-R 图、文章状态机 draw.io 源文件 |
@@ -276,8 +301,12 @@ mvn test
 
 ```bash
 mvn clean package
-# 产物：target/cms.jar（可执行 Spring Boot JAR）
-java -jar target/cms.jar --spring.profiles.active=mysql
+# 产物：target/cms.war（可执行 WAR，内含内嵌 Tomcat）
+java -jar target/cms.war --spring.profiles.active=mysql
+# 或部署到外部 Tomcat 9：
+# copy target/cms.war %CATALINA_HOME%\webapps\，访问 http://localhost:8080/cms/
 ```
+
+> `cms.war.original` 是不含 Spring Boot 启动器的原始 WAR，可忽略；`target/cms/` 是解包后的 exploded 目录，供 IDEA 热部署使用。
 
 > 说明：自动化测试基于 JDK 17 + H2；另已在本机 **MySQL 9.5.0（3306）+ Connector/J 9.5.0** 服务上完成建表、初始化、应用启动、登录/文章接口验证和浏览器全流程冒烟，详见 [docs/TESTING.md](docs/TESTING.md) 1.5 节。连接实际 MySQL 时通过 `DB_PASSWORD` 注入密码，切勿将真实密码提交到版本库。

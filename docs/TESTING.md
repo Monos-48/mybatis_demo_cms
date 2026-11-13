@@ -47,7 +47,7 @@ mvn -q -Dtest=CategoryUserRoleLogIntegrationTest test
 
 ```bash
 mvn clean package -DskipTests
-java -jar target/cms.jar
+java -jar target/cms.war
 ```
 
 ### 1.4 测试隔离设计
@@ -69,7 +69,7 @@ mysql --no-defaults --default-character-set=utf8mb4 -uroot -p < sql/02_data.sql
 
 # 使用 MySQL profile 启动应用；DB_PASSWORD 由部署者在命令行/环境中注入
 SPRING_PROFILES_ACTIVE=mysql DB_HOST=127.0.0.1 DB_PORT=3306 \
-DB_NAME=cms_db DB_USERNAME=root DB_PASSWORD='<部署者密码>' java -jar target/cms.jar
+DB_NAME=cms_db DB_USERNAME=root DB_PASSWORD='<部署者密码>' java -jar target/cms.war
 ```
 
 验证结果：
@@ -140,7 +140,7 @@ DB_NAME=cms_db DB_USERNAME=root DB_PASSWORD='<部署者密码>' java -jar target
 
 ## 4. 浏览器端到端验收
 
-使用真实 Chrome，通过 Playwright 驱动运行中的 `target/cms.jar`。H2 每次启动重置，验收从干净数据开始。
+使用真实 Chrome，通过 Playwright 驱动运行中的 `target/cms.war`。H2 每次启动重置，验收从干净数据开始。
 
 ### 4.1 验收脚本步骤
 

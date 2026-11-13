@@ -2,6 +2,23 @@
 (() => {
     'use strict';
 
+    /**
+     * 计算应用根路径（包含 Tomcat context path）。
+     * 示例：http://host/cms/js/app.js -> /cms/
+     * 部署到 /、/cms、/mybatis_demo_cms_war_exploded 时均可用。
+     */
+    const APP_BASE = (() => {
+        const script = document.currentScript;
+        if (script && script.src) {
+            return new URL('../', new URL(script.src, window.location.href)).pathname;
+        }
+        return window.location.pathname.replace(/[^/]*$/, '') || '/';
+    })();
+
+    function appUrl(path) {
+        return APP_BASE + String(path).replace(/^\/+/, '');
+    }
+
     const STATUS_TEXT = {0: '草稿', 1: '待审核', 2: '审核通过', 3: '已驳回', 4: '已发布', 5: '已下架'};
     const STATUS_CLASS = {0: 'draft', 1: 'pending', 2: 'approved', 3: 'rejected', 4: 'published', 5: 'offline'};
     const USER_STATUS = {0: '禁用', 1: '正常', 2: '待审批'};
@@ -30,12 +47,15 @@
         roles: [],
         permissions: [],
         rolesLoaded: false,
-        article: {pageNum: 1, pageSize: 8, title: '', categoryId: '', status: '', startDate: '', endDate: '', sort: 'createTime|desc'},
+        article: {pageNum: 1, pageSize: 10, title: '', categoryId: '', status: '', startDate: '', endDate: '', sort: 'createTime|desc'},
         articleRows: [],
         selectedArticles: new Set(),
         user: {pageNum: 1, pageSize: 10, keyword: '', status: ''},
-        log: {pageNum: 1, pageSize: 10, module: '', username: '', success: '', startDate: '', endDate: ''}
+        log: {pageNum: 1, pageSize: 10, module: '', username: '', success: '', startDate: '', endDate: ''},
+        logRows: []
     };
+    let navSeq = 0;
+    let serviceTimer = null;
 
     const $ = (selector, root = document) => root.querySelector(selector);
     const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
@@ -60,33 +80,102 @@
         const root = $('#toast-root');
         const node = document.createElement('div');
         node.className = `toast ${type}`.trim();
-        node.textContent = message;
+        const icon = type === 'success' ? '✓' : type === 'error' ? '!' : 'i';
+        node.innerHTML = `<span class="toast-icon">${icon}</span><span>${esc(message)}</span>`;
         root.appendChild(node);
-        setTimeout(() => node.remove(), 3200);
+        setTimeout(() => node.remove(), type === 'error' ? 4200 : 3200);
+    }
+
+    /** 按钮忙碌态：防止重复提交，并在请求结束后恢复。 */
+    function setBusy(button, busy, busyText) {
+        if (!button) return;
+        if (busy) {
+            if (!button.dataset.originalHtml) button.dataset.originalHtml = button.innerHTML;
+            button.classList.add('is-busy');
+            button.disabled = true;
+            if (busyText) button.textContent = busyText;
+        } else {
+            button.classList.remove('is-busy');
+            button.disabled = false;
+            if (button.dataset.originalHtml) {
+                button.innerHTML = button.dataset.originalHtml;
+                delete button.dataset.originalHtml;
+            }
+        }
+    }
+
+    function skeleton(rows = 4) {
+        return `<div class="card skeleton-card">${Array.from({length: rows}, (_, index) =>
+            `<div class="skeleton-line ${index === 0 ? 'w-30' : index % 2 ? 'w-90' : 'w-60'}"></div>`).join('')}</div>`;
+    }
+
+    /** 与应用风格一致的二次确认，返回 Promise<boolean>，不会覆盖当前编辑弹窗。 */
+    function confirmDialog({title = '请确认操作', message, confirmText = '确定', cancelText = '取消', danger = false}) {
+        return new Promise((resolve) => {
+            const root = $('#confirm-root');
+            root.innerHTML = `
+                <div class="modal-backdrop confirm-backdrop">
+                    <div class="modal confirm-modal" role="alertdialog" aria-modal="true" aria-label="${esc(title)}">
+                        <div class="confirm-body">
+                            <div class="confirm-icon ${danger ? 'danger' : ''}">${danger ? '!' : '?'}</div>
+                            <h3 style="margin:0 0 8px;font-size:17px">${esc(title)}</h3>
+                            <div class="muted" style="font-size:13px;line-height:1.7">${esc(message)}</div>
+                        </div>
+                        <div class="confirm-actions">
+                            <button type="button" class="btn" data-confirm-cancel>${esc(cancelText)}</button>
+                            <button type="button" class="btn ${danger ? 'btn-danger-solid' : 'btn-primary'}" data-confirm-ok>${esc(confirmText)}</button>
+                        </div>
+                    </div>
+                </div>`;
+            const finish = (value) => {
+                root.innerHTML = '';
+                document.removeEventListener('keydown', onKey);
+                resolve(value);
+            };
+            const onKey = (event) => {
+                if (event.key === 'Escape') finish(false);
+                if (event.key === 'Enter') finish(true);
+            };
+            $('[data-confirm-cancel]', root).addEventListener('click', () => finish(false));
+            $('[data-confirm-ok]', root).addEventListener('click', () => finish(true));
+            $('.confirm-backdrop', root).addEventListener('mousedown', (event) => {
+                if (event.target === event.currentTarget) finish(false);
+            });
+            document.addEventListener('keydown', onKey);
+            setTimeout(() => $('[data-confirm-ok]', root)?.focus(), 30);
+        });
     }
 
     function handleUnauthorized() {
         if (!state.me) return;
         state.me = null;
-        closeModal();
+        closeModal(true);
         showLogin();
         toast('登录状态已失效，请重新登录', 'error');
     }
 
     async function api(path, options = {}) {
-        const {method = 'GET', body, auth = true} = options;
+        const {method = 'GET', body, auth = true, timeout = 15000} = options;
         const headers = {Accept: 'application/json'};
         if (body !== undefined) headers['Content-Type'] = 'application/json';
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeout);
         let response;
         try {
-            response = await fetch(path, {
+            response = await fetch(appUrl(path), {
                 method,
                 headers,
                 credentials: 'same-origin',
+                signal: controller.signal,
                 body: body === undefined ? undefined : JSON.stringify(body)
             });
         } catch (error) {
-            throw new Error('网络请求失败，请确认服务已启动');
+            if (error.name === 'AbortError') {
+                throw new Error('请求超时，请检查服务状态后重试');
+            }
+            throw new Error('网络请求失败，请确认服务已启动或网络连接正常');
+        } finally {
+            clearTimeout(timer);
         }
         let payload = null;
         try {
@@ -125,10 +214,34 @@
         return `<span class="badge badge-${cls}">${USER_STATUS[status] || '未知'}</span>`;
     }
 
+    function hideBoot() {
+        const boot = $('#boot-screen');
+        if (!boot || boot.classList.contains('hidden')) return;
+        boot.classList.add('leaving');
+        setTimeout(() => boot.classList.add('hidden'), 220);
+    }
+
+    function resetUserState() {
+        state.me = null;
+        state.page = 'dashboard';
+        state.allTree = [];
+        state.roles = [];
+        state.permissions = [];
+        state.rolesLoaded = false;
+        state.articleRows = [];
+        state.selectedArticles.clear();
+        state.logRows = [];
+        closeModal(true);
+    }
+
     function showLogin(clearPassword = true) {
         if (clearPassword) $('#login-password').value = '';
+        resetUserState();
+        $('#login-error').hidden = true;
         $('#app').classList.add('hidden');
         $('#login-screen').classList.remove('hidden');
+        setSidebar(false);
+        hideBoot();
         setTimeout(() => $('#login-username').focus(), 50);
     }
 
@@ -140,31 +253,58 @@
         $('#user-account').textContent = '@' + state.me.username;
         $('#avatar').textContent = name.slice(0, 1).toUpperCase();
         $('#role-chip').textContent = state.me.roles.join(' · ');
+        hideBoot();
+    }
+
+    function setSidebar(open) {
+        $('#app').classList.toggle('nav-open', open);
+        $('#sidebar-backdrop').hidden = !open;
+        $('#sidebar-toggle').setAttribute('aria-expanded', String(open));
+    }
+
+    function pageFromHash() {
+        let id = window.location.hash.replace(/^#\/?/, '');
+        try {
+            id = decodeURIComponent(id);
+        } catch (error) { /* 非法编码时回退到工作台 */ }
+        return NAV.some((item) => item.id === id) ? id : 'dashboard';
     }
 
     function renderNav() {
         const nav = $('#nav');
         nav.innerHTML = NAV.filter((item) => !item.perm || has(item.perm)).map((item) =>
-            `<button type="button" data-page="${item.id}" class="${state.page === item.id ? 'active' : ''}">
-                <span class="ico">${item.icon}</span><span>${item.label}</span>
+            `<button type="button" data-page="${item.id}" class="${state.page === item.id ? 'active' : ''}" ${state.page === item.id ? 'aria-current="page"' : ''}>
+                <span class="ico" aria-hidden="true">${item.icon}</span><span>${item.label}</span>
             </button>`).join('');
         $$('#nav button').forEach((button) => {
-            button.addEventListener('click', () => navigate(button.dataset.page));
+            button.addEventListener('click', () => {
+                setSidebar(false);
+                navigate(button.dataset.page);
+            });
         });
     }
 
-    function navigate(page) {
+    function navigate(page, options = {}) {
         const target = NAV.find((item) => item.id === page);
         if (!target || (target.perm && !has(target.perm))) {
             toast('没有访问该模块的权限', 'error');
+            if (options.fromHash) {
+                history.replaceState(null, '', '#/' + state.page);
+            }
             return;
         }
+        const seq = ++navSeq;
         state.page = page;
         renderNav();
+        if (!options.fromHash) {
+            const hash = '#/' + page;
+            if (window.location.hash !== hash) window.location.hash = hash;
+        }
         const meta = PAGE_META[page];
         $('#page-kicker').textContent = meta[0];
         $('#page-title').textContent = meta[1];
-        $('#content').innerHTML = '<div class="card card-pad muted">正在加载…</div>';
+        $('#content').innerHTML = skeleton();
+        window.scrollTo({top: 0, behavior: 'smooth'});
         const renderers = {
             dashboard: renderDashboard,
             articles: renderArticles,
@@ -174,23 +314,31 @@
             logs: renderLogs
         };
         renderers[page]().catch((error) => {
-            $('#content').innerHTML = `<div class="card"><div class="empty-state"><strong>加载失败</strong>${esc(error.message)}</div></div>`;
+            if (seq !== navSeq) return;
+            $('#content').innerHTML = `<div class="card"><div class="empty-state"><span class="empty-icon">⚠</span><strong>加载失败</strong>${esc(error.message)}</div></div>`;
         });
     }
 
+    window.addEventListener('hashchange', () => {
+        const page = pageFromHash();
+        if (page !== state.page && state.me) navigate(page, {fromHash: true});
+    });
+
     async function boot() {
         try {
-            state.me = await api('/api/auth/me', {auth: false});
+            state.me = await api('/api/auth/me', {auth: false, timeout: 5000});
             await enterApp();
         } catch (error) {
             showLogin(false);
+        } finally {
+            hideBoot();
+            probeService();
+            serviceTimer = setInterval(probeService, 60000);
         }
     }
 
     async function enterApp() {
         showApp();
-        state.page = 'dashboard';
-        renderNav();
         if (has('category:list')) {
             try {
                 state.allTree = await api('/api/categories/tree');
@@ -198,12 +346,40 @@
                 state.allTree = [];
             }
         }
-        navigate('dashboard');
+        let page = pageFromHash();
+        const target = NAV.find((item) => item.id === page);
+        if (!target || (target.perm && !has(target.perm))) page = 'dashboard';
+        if (window.location.hash !== '#/' + page) {
+            history.replaceState(null, '', '#/' + page);
+        }
+        navigate(page, {fromHash: true});
+    }
+
+    /* ------------------------------ 服务状态 ------------------------------ */
+    async function probeService() {
+        const dot = $('#service-dot');
+        const label = $('#service-status');
+        if (!label) return;
+        dot.classList.remove('is-offline');
+        dot.classList.add('is-pending');
+        label.textContent = '正在检测服务…';
+        try {
+            await api('/api/health', {auth: false, timeout: 5000});
+            dot.classList.remove('is-pending', 'is-offline');
+            label.textContent = '服务运行中';
+        } catch (error) {
+            dot.classList.remove('is-pending');
+            dot.classList.add('is-offline');
+            label.textContent = '服务不可用';
+        }
     }
 
     /* ------------------------------ 弹窗 ------------------------------ */
+    let modalGuard = null;
+
     function openModal({title, subtitle = '', body, footer = '', size = '', onMount}) {
-        closeModal();
+        modalGuard = null;
+        closeModal(true);
         const root = $('#modal-root');
         root.innerHTML = `
             <div class="modal-backdrop">
@@ -217,20 +393,33 @@
                 </div>
             </div>`;
         document.body.style.overflow = 'hidden';
-        $('.modal-close', root).addEventListener('click', closeModal);
+        $('.modal-close', root).addEventListener('click', () => closeModal());
         $('.modal-backdrop', root).addEventListener('mousedown', (event) => {
             if (event.target === event.currentTarget) closeModal();
         });
         if (onMount) onMount(root);
     }
 
-    function closeModal() {
+    function closeModal(force = false) {
+        if (!force && modalGuard && modalGuard()) {
+            confirmDialog({
+                title: '放弃未保存的修改？',
+                message: '当前表单有尚未保存的内容，关闭后这些修改将丢失。',
+                confirmText: '放弃修改',
+                cancelText: '继续编辑',
+                danger: true
+            }).then((ok) => {
+                if (ok) closeModal(true);
+            });
+            return;
+        }
+        modalGuard = null;
         $('#modal-root').innerHTML = '';
         document.body.style.overflow = '';
     }
 
     document.addEventListener('keydown', (event) => {
-        if (event.key === 'Escape') closeModal();
+        if (event.key === 'Escape' && $('#confirm-root').innerHTML === '') closeModal();
     });
 
     /* ------------------------------ 分类工具 ------------------------------ */
@@ -270,61 +459,79 @@
         return output;
     }
 
-    function pagerHtml(page, label = '条') {
-        return `<div class="pagination-info">第 ${page.pageNum} / ${Math.max(page.pages, 1)} 页 · 共 ${page.total} ${label}</div>
+    function pagerHtml(page, label = '条', options = {}) {
+        const sizes = options.sizes;
+        const sizePicker = sizes ? `<label class="page-size">每页
+                <select data-page-size>${sizes.map((size) => `<option value="${size}" ${Number(options.pageSize) === size ? 'selected' : ''}>${size}</option>`).join('')}</select>
+            </label>` : '';
+        return `<div class="pagination-info"><span>第 ${page.pageNum} / ${Math.max(page.pages, 1)} 页 · 共 ${page.total} ${label}</span>${sizePicker}</div>
             <div class="pagination-actions">
                 <button type="button" class="btn btn-sm" data-page="${page.pageNum - 1}" ${page.pageNum <= 1 ? 'disabled' : ''}>上一页</button>
                 <button type="button" class="btn btn-sm" data-page="${page.pageNum + 1}" ${page.pageNum >= page.pages ? 'disabled' : ''}>下一页</button>
             </div>`;
     }
 
-    function bindPager(container, page, onPage) {
+    function bindPager(container, page, onPage, onSize) {
         $$('button[data-page]', container).forEach((button) => {
             button.addEventListener('click', () => {
                 const next = Number(button.dataset.page);
                 if (next >= 1 && next <= page.pages) onPage(next);
             });
         });
+        const select = $('[data-page-size]', container);
+        if (select && onSize) {
+            select.addEventListener('change', () => onSize(Number(select.value)));
+        }
     }
 
     /* ------------------------------ 工作台 ------------------------------ */
     async function renderDashboard() {
-        const [allPage, pendingPage, publishedPage] = await Promise.all([
-            api('/api/articles?pageNum=1&pageSize=5&sortField=createTime&sortOrder=desc'),
-            api('/api/articles?pageNum=1&pageSize=1&status=1'),
-            api('/api/articles?pageNum=1&pageSize=1&status=4')
-        ]);
-        const categories = flattenTree(state.allTree);
+        const canList = has('article:list');
+        let allPage = {total: '—', records: []};
+        let pendingPage = {total: '—'};
+        let publishedPage = {total: '—'};
+        if (canList) {
+            const [all, pending, published] = await Promise.all([
+                api('/api/articles?pageNum=1&pageSize=5&sortField=createTime&sortOrder=desc'),
+                api('/api/articles?pageNum=1&pageSize=1&status=1'),
+                api('/api/articles?pageNum=1&pageSize=1&status=4')
+            ]);
+            allPage = all;
+            pendingPage = pending;
+            publishedPage = published;
+        }
+        const categories = has('category:list') ? flattenTree(state.allTree) : [];
         const recent = allPage.records || [];
         const name = esc(state.me.nickname || state.me.username);
         const roleNames = state.me.roles.map((role) => role === 'ADMIN' ? '超级管理员' : role === 'EDITOR' ? '内容编辑' : role === 'AUTHOR' ? '内容作者' : role === 'VIEWER' ? '只读访客' : role).join(' / ');
+        const clickable = (attrs) => canList ? ` class="stat-card clickable" tabindex="0" role="button" ${attrs}` : ' class="stat-card"';
 
         $('#content').innerHTML = `
             <section class="hero-card">
                 <h3>你好，${name}</h3>
                 <p>今天也请让内容保持有序：从分类规划、草稿撰写，到审核发布与操作审计，所有动作都在同一套权限边界内完成。</p>
-                <div class="hero-meta"><span>当前身份：${esc(roleNames)}</span><span>权限点：${state.me.permissions.length} 项</span><span>系统状态：运行中</span></div>
+                <div class="hero-meta"><span>当前身份：${esc(roleNames)}</span><span>权限点：${state.me.permissions.length} 项</span><span>系统状态：<span id="hero-service">运行中</span></span></div>
             </section>
             <section class="stat-grid">
-                <div class="stat-card"><div class="stat-label">全部文章</div><div class="stat-value">${allPage.total}</div><div class="stat-foot">覆盖草稿、审核与发布全状态</div></div>
-                <div class="stat-card"><div class="stat-label">待审核</div><div class="stat-value">${pendingPage.total}</div><div class="stat-foot">${has('article:audit') ? '等待你给出审核结论' : '由内容编辑处理'}</div></div>
-                <div class="stat-card"><div class="stat-label">已发布</div><div class="stat-value">${publishedPage.total}</div><div class="stat-foot">线上可见内容</div></div>
-                <div class="stat-card"><div class="stat-label">分类节点</div><div class="stat-value">${categories.length}</div><div class="stat-foot">多级分类树节点总数</div></div>
+                <div${clickable('data-article-status=""')}><div class="stat-label">全部文章</div><div class="stat-value">${allPage.total}</div><div class="stat-foot">覆盖草稿、审核与发布全状态</div>${canList ? '<div class="stat-more">查看全部 →</div>' : ''}</div>
+                <div${clickable('data-article-status="1"')}><div class="stat-label">待审核</div><div class="stat-value">${pendingPage.total}</div><div class="stat-foot">${has('article:audit') ? '等待你给出审核结论' : '由内容编辑处理'}</div>${canList ? '<div class="stat-more">进入审核队列 →</div>' : ''}</div>
+                <div${clickable('data-article-status="4"')}><div class="stat-label">已发布</div><div class="stat-value">${publishedPage.total}</div><div class="stat-foot">线上可见内容</div>${canList ? '<div class="stat-more">查看已发布 →</div>' : ''}</div>
+                ${has('category:list') ? `<div class="stat-card clickable" tabindex="0" role="button" data-go="categories"><div class="stat-label">分类节点</div><div class="stat-value">${categories.length}</div><div class="stat-foot">多级分类树节点总数</div><div class="stat-more">管理分类 →</div></div>` : '<div class="stat-card"><div class="stat-label">分类节点</div><div class="stat-value">—</div><div class="stat-foot">当前角色无分类查看权限</div></div>'}
             </section>
             <section class="dashboard-grid">
                 <div class="card">
-                    <div class="section-title"><h4>最近内容</h4><button class="btn-link" data-go="articles">查看全部 →</button></div>
+                    <div class="section-title"><h4>最近内容</h4>${canList ? '<button class="btn-link" data-go="articles">查看全部 →</button>' : ''}</div>
                     <div class="table-wrap">
                         <table class="data-table">
                             <thead><tr><th>标题</th><th>分类</th><th>状态</th><th>更新时间</th></tr></thead>
                             <tbody>
                             ${recent.length ? recent.map((article) => `
-                                <tr>
+                                <tr class="recent-row" data-article-id="${article.id}" tabindex="0">
                                     <td class="title-cell"><span class="title-main">${esc(article.title)}</span><span class="title-sub">${esc(article.authorName || '—')}</span></td>
                                     <td>${esc(article.categoryName || '—')}</td>
                                     <td>${articleBadge(article.status)}</td>
                                     <td class="cell-time">${fmt(article.updateTime)}</td>
-                                </tr>`).join('') : '<tr><td colspan="4"><div class="empty-state">暂无内容</div></td></tr>'}
+                                </tr>`).join('') : `<tr><td colspan="4"><div class="empty-state"><span class="empty-icon">▤</span><strong>${canList ? '暂无内容' : '暂无文章查看权限'}</strong>${canList ? '新建第一篇内容后，这里会展示最近动态' : '请联系管理员分配 article:list 权限'}</div></td></tr>`}
                             </tbody>
                         </table>
                     </div>
@@ -339,17 +546,35 @@
                     </div>
                 </div>
             </section>`;
+
+        const goArticles = (status) => {
+            state.article = {...state.article, pageNum: 1, status};
+            navigate('articles');
+        };
+        $$('[data-article-status]', $('#content')).forEach((card) => {
+            const open = () => goArticles(card.dataset.articleStatus);
+            card.addEventListener('click', open);
+            card.addEventListener('keydown', (event) => {
+                if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); open(); }
+            });
+        });
         $$('[data-go]', $('#content')).forEach((button) => {
             button.addEventListener('click', () => navigate(button.dataset.go));
+        });
+        $$('.recent-row', $('#content')).forEach((row) => {
+            const open = () => openArticleDetail(Number(row.dataset.articleId));
+            row.addEventListener('click', open);
+            row.addEventListener('keydown', (event) => {
+                if (event.key === 'Enter') { event.preventDefault(); open(); }
+            });
         });
     }
 
     /* ------------------------------ 文章 ------------------------------ */
     async function renderArticles() {
-        if (!state.allTree.length) {
+        if (!state.allTree.length && has('category:list')) {
             try { state.allTree = await api('/api/categories/tree'); } catch (error) { /* ignore */ }
         }
-        const flatCategories = flattenTree(state.allTree);
         $('#content').innerHTML = `
             <div class="toolbar">
                 <div class="toolbar-actions">
@@ -360,7 +585,7 @@
                 <button class="btn btn-ghost" id="refresh-articles">↻ 刷新</button>
             </div>
             <form class="card filters" id="article-filters">
-                <label class="field"><span>标题关键字</span><input name="title" value="${esc(state.article.title)}" placeholder="模糊搜索标题"></label>
+                <label class="field"><span>标题关键字</span><input name="title" value="${esc(state.article.title)}" placeholder="模糊搜索标题" maxlength="100"></label>
                 <label class="field"><span>分类</span><select name="categoryId"><option value="">全部分类</option>${categoryOptions(state.allTree, state.article.categoryId)}</select></label>
                 <label class="field"><span>状态</span><select name="status"><option value="">全部状态</option>${Object.entries(STATUS_TEXT).map(([key, value]) => `<option value="${key}" ${String(state.article.status) === key ? 'selected' : ''}>${value}</option>`).join('')}</select></label>
                 <label class="field"><span>开始日期</span><input type="date" name="startDate" value="${esc(state.article.startDate)}"></label>
@@ -374,11 +599,16 @@
                 </select></label>
                 <div class="filter-actions"><button class="btn btn-primary" type="submit">筛选</button><button class="btn" type="button" id="reset-article-filter">重置</button></div>
             </form>
+            <div class="selection-bar" id="selection-bar" hidden>
+                <span>已选择 <b id="sel-count">0</b> 篇文章</span>
+                <span class="muted">可执行批量发布 / 下架</span>
+                <button type="button" class="btn btn-sm" id="clear-selection">取消选择</button>
+            </div>
             <div class="card">
                 <div class="table-wrap">
                     <table class="data-table">
                         <thead><tr>
-                            <th style="width:38px"><input type="checkbox" id="article-check-all" title="全选本页"></th>
+                            <th style="width:38px"><input type="checkbox" id="article-check-all" title="全选本页" aria-label="全选本页"></th>
                             <th>文章</th><th>分类 / 作者</th><th>状态</th><th>发布时间</th><th>更新时间</th><th style="width:230px">操作</th>
                         </tr></thead>
                         <tbody id="article-body"><tr><td colspan="7"><div class="empty-state">正在加载…</div></td></tr></tbody>
@@ -390,29 +620,42 @@
         $('#article-filters').addEventListener('submit', (event) => {
             event.preventDefault();
             const form = new FormData(event.currentTarget);
+            const startDate = form.get('startDate') || '';
+            const endDate = form.get('endDate') || '';
+            if (startDate && endDate && startDate > endDate) {
+                toast('开始日期不能晚于结束日期', 'error');
+                return;
+            }
             state.article.title = String(form.get('title') || '').trim();
             state.article.categoryId = form.get('categoryId') || '';
             state.article.status = form.get('status') || '';
-            state.article.startDate = form.get('startDate') || '';
-            state.article.endDate = form.get('endDate') || '';
+            state.article.startDate = startDate;
+            state.article.endDate = endDate;
             state.article.sort = form.get('sort') || 'createTime|desc';
             state.article.pageNum = 1;
             loadArticles();
         });
         $('#reset-article-filter').addEventListener('click', () => {
             state.article = {...state.article, pageNum: 1, title: '', categoryId: '', status: '', startDate: '', endDate: '', sort: 'createTime|desc'};
+            state.selectedArticles.clear();
             renderArticles();
         });
         $('#refresh-articles').addEventListener('click', () => loadArticles());
         $('#new-article')?.addEventListener('click', () => openArticleForm());
         $('#batch-publish')?.addEventListener('click', () => batchChange('publish'));
         $('#batch-offline')?.addEventListener('click', () => batchChange('offline'));
+        $('#clear-selection').addEventListener('click', () => {
+            state.selectedArticles.clear();
+            $$('.row-check', $('#article-body')).forEach((checkbox) => { checkbox.checked = false; });
+            updateArticleSelection();
+        });
         $('#article-check-all').addEventListener('change', (event) => {
             $$('.row-check', $('#article-body')).forEach((checkbox) => {
                 checkbox.checked = event.target.checked;
                 if (checkbox.checked) state.selectedArticles.add(Number(checkbox.value));
                 else state.selectedArticles.delete(Number(checkbox.value));
             });
+            updateArticleSelection();
         });
         $('#article-body').addEventListener('click', (event) => {
             const button = event.target.closest('button[data-action]');
@@ -424,8 +667,22 @@
             const id = Number(event.target.value);
             if (event.target.checked) state.selectedArticles.add(id);
             else state.selectedArticles.delete(id);
+            updateArticleSelection();
         });
         await loadArticles();
+    }
+
+    function updateArticleSelection() {
+        const bar = $('#selection-bar');
+        if (!bar) return;
+        bar.hidden = state.selectedArticles.size === 0;
+        $('#sel-count').textContent = state.selectedArticles.size;
+        const pageIds = state.articleRows.map((article) => article.id);
+        const all = $('#article-check-all');
+        if (!all) return;
+        const checkedOnPage = pageIds.filter((id) => state.selectedArticles.has(id)).length;
+        all.checked = pageIds.length > 0 && checkedOnPage === pageIds.length;
+        all.indeterminate = checkedOnPage > 0 && checkedOnPage < pageIds.length;
     }
 
     function articleQuery() {
@@ -445,12 +702,13 @@
 
     async function loadArticles() {
         state.selectedArticles.clear();
+        updateArticleSelection();
         try {
             const page = await api('/api/articles?' + articleQuery());
             state.articleRows = page.records || [];
             const body = $('#article-body');
             if (!state.articleRows.length) {
-                body.innerHTML = '<tr><td colspan="7"><div class="empty-state"><strong>没有匹配的文章</strong>调整筛选条件或新建一篇内容</div></td></tr>';
+                body.innerHTML = `<tr><td colspan="7"><div class="empty-state"><span class="empty-icon">▤</span><strong>没有匹配的文章</strong>调整筛选条件${has('article:create') ? '，或新建一篇内容' : ''}</div></td></tr>`;
             } else {
                 body.innerHTML = state.articleRows.map((article) => {
                     const owner = article.authorId === state.me.id;
@@ -476,13 +734,18 @@
                     </tr>`;
                 }).join('');
             }
-            $('#article-pager').innerHTML = pagerHtml(page, '篇文章');
+            updateArticleSelection();
+            $('#article-pager').innerHTML = pagerHtml(page, '篇文章', {sizes: [10, 20, 50], pageSize: state.article.pageSize});
             bindPager($('#article-pager'), page, (next) => {
                 state.article.pageNum = next;
                 loadArticles();
+            }, (size) => {
+                state.article.pageSize = size;
+                state.article.pageNum = 1;
+                loadArticles();
             });
         } catch (error) {
-            $('#article-body').innerHTML = `<tr><td colspan="7"><div class="empty-state">${esc(error.message)}</div></td></tr>`;
+            $('#article-body').innerHTML = `<tr><td colspan="7"><div class="empty-state"><span class="empty-icon">⚠</span>${esc(error.message)}</div></td></tr>`;
             toast(error.message, 'error');
         }
     }
@@ -493,14 +756,14 @@
             if (action === 'edit') return openArticleForm(id);
             if (action === 'audit') return openAuditModal(id);
             if (action === 'delete') {
-                if (!confirm('确定删除这篇文章吗？删除后不可在列表中恢复。')) return;
+                if (!(await confirmDialog({title: '删除文章', message: '删除后不可在列表中恢复，确定继续吗？', confirmText: '删除', danger: true}))) return;
                 await api(`/api/articles/${id}`, {method: 'DELETE'});
                 toast('文章已删除', 'success');
                 await loadArticles();
                 return;
             }
             if (action === 'submit') {
-                if (!confirm('提交审核后，文章将进入待审核队列且不可编辑，确定继续吗？')) return;
+                if (!(await confirmDialog({title: '提交审核', message: '提交后文章将进入待审核队列且不可编辑，确定继续吗？', confirmText: '提交审核'}))) return;
                 await api(`/api/articles/${id}/submit`, {method: 'POST'});
                 toast('已提交审核', 'success');
                 await loadArticles();
@@ -508,7 +771,7 @@
             }
             if (action === 'publish' || action === 'offline') {
                 const label = action === 'publish' ? '发布' : '下架';
-                if (!confirm(`确定${label}这篇文章吗？`)) return;
+                if (!(await confirmDialog({title: label + '文章', message: `确定${label}这篇文章吗？`, confirmText: label}))) return;
                 await api(`/api/articles/${id}/${action}`, {method: 'POST'});
                 toast(`文章已${label}`, 'success');
                 await loadArticles();
@@ -525,7 +788,7 @@
             return;
         }
         const label = action === 'publish' ? '发布' : '下架';
-        if (!confirm(`确定批量${label}选中的 ${ids.length} 篇文章吗？`)) return;
+        if (!(await confirmDialog({title: `批量${label}`, message: `确定批量${label}选中的 ${ids.length} 篇文章吗？`, confirmText: `批量${label}`}))) return;
         try {
             await api(`/api/articles/batch/${action}`, {method: 'POST', body: {articleIds: ids}});
             toast(`批量${label}成功`, 'success');
@@ -538,6 +801,9 @@
     async function openArticleDetail(id) {
         try {
             const article = await api(`/api/articles/${id}`);
+            const owner = article.authorId === state.me.id;
+            const editable = (article.status === 0 || article.status === 3)
+                && has('article:edit') && (isManager() || owner);
             openModal({
                 title: article.title,
                 subtitle: `${article.categoryName || '未分类'} · ${article.authorName || '未知作者'}`,
@@ -553,9 +819,14 @@
                     </dl>
                     ${article.summary ? `<p class="muted" style="line-height:1.7">${esc(article.summary)}</p>` : ''}
                     <div class="detail-content">${esc(article.content)}</div>`,
-                footer: '<button class="btn" data-close>关闭</button>'
+                footer: `<button class="btn" data-close>关闭</button>
+                    ${editable ? '<button class="btn btn-primary" data-edit-article>编辑文章</button>' : ''}`
             });
-            $('[data-close]').addEventListener('click', closeModal);
+            $('[data-close]').addEventListener('click', () => closeModal());
+            $('[data-edit-article]')?.addEventListener('click', () => {
+                closeModal(true);
+                openArticleForm(article.id);
+            });
         } catch (error) {
             toast(error.message, 'error');
         }
@@ -574,24 +845,46 @@
                 toast('暂无启用的分类，请先创建分类', 'error');
                 return;
             }
+            const initial = {
+                title: article ? article.title : '',
+                categoryId: article ? String(article.categoryId) : '',
+                summary: article ? (article.summary || '') : '',
+                content: article ? article.content : ''
+            };
             openModal({
                 title: article ? '编辑文章' : '新建文章',
                 subtitle: article ? `当前状态：${STATUS_TEXT[article.status]} · 保存使用乐观锁校验版本` : '保存为草稿，或直接提交审核',
                 size: 'modal-lg',
                 body: `
-                    <form id="article-form" class="form-grid">
-                        <label class="field span-2"><span>标题 *</span><input id="af-title" maxlength="100" value="${esc(article ? article.title : '')}" placeholder="2-100 个字符"></label>
+                    <form id="article-form" class="form-grid" autocomplete="off">
+                        <label class="field span-2"><span>标题 *<small class="char-count" id="af-title-count">0 / 100</small></span>
+                            <input id="af-title" maxlength="100" value="${esc(initial.title)}" placeholder="2-100 个字符"></label>
                         <label class="field"><span>分类 *</span><select id="af-category"><option value="">请选择分类</option>${options}</select></label>
-                        <label class="field"><span>摘要</span><input id="af-summary" maxlength="500" value="${esc(article ? (article.summary || '') : '')}" placeholder="选填，最多 500 字"></label>
-                        <label class="field span-2"><span>正文 *</span><textarea id="af-content" style="min-height:240px" placeholder="至少 10 个字符">${esc(article ? article.content : '')}</textarea></label>
+                        <label class="field"><span>摘要<small class="char-count" id="af-summary-count">0 / 500</small></span>
+                            <input id="af-summary" maxlength="500" value="${esc(initial.summary)}" placeholder="选填，最多 500 字"></label>
+                        <label class="field span-2"><span>正文 *<small class="char-count" id="af-content-count">0 字</small></span>
+                            <textarea id="af-content" style="min-height:240px" placeholder="至少 10 个字符">${esc(initial.content)}</textarea></label>
                     </form>`,
                 footer: `
                     <button class="btn" data-close>取消</button>
                     <button class="btn" id="save-draft">保存草稿</button>
                     <button class="btn btn-primary" id="save-submit">保存并提交审核</button>`
             });
-            $('[data-close]').addEventListener('click', closeModal);
-            const save = async (submitForReview) => {
+            const updateCounts = () => {
+                $('#af-title-count').textContent = `${$('#af-title').value.length} / 100`;
+                $('#af-summary-count').textContent = `${$('#af-summary').value.length} / 500`;
+                $('#af-content-count').textContent = `${$('#af-content').value.length} 字`;
+            };
+            ['#af-title', '#af-summary', '#af-content', '#af-category'].forEach((selector) => {
+                $(selector).addEventListener('input', updateCounts);
+            });
+            updateCounts();
+            modalGuard = () => $('#af-title').value !== initial.title
+                || $('#af-category').value !== initial.categoryId
+                || $('#af-summary').value !== initial.summary
+                || $('#af-content').value !== initial.content;
+            $('[data-close]').addEventListener('click', () => closeModal());
+            const save = async (submitForReview, button) => {
                 const title = $('#af-title').value.trim();
                 const categoryId = $('#af-category').value;
                 const summary = $('#af-summary').value.trim();
@@ -606,6 +899,8 @@
                     content,
                     submitForReview
                 };
+                const buttons = [$('#save-draft'), $('#save-submit')];
+                buttons.forEach((item) => setBusy(item, true));
                 try {
                     if (article) {
                         payload.version = article.version;
@@ -613,15 +908,17 @@
                     } else {
                         await api('/api/articles', {method: 'POST', body: payload});
                     }
-                    closeModal();
+                    closeModal(true);
                     toast(submitForReview ? '已保存并提交审核' : '已保存草稿', 'success');
                     await loadArticles();
                 } catch (error) {
                     toast(error.message, 'error');
+                } finally {
+                    buttons.forEach((item) => setBusy(item, false));
                 }
             };
-            $('#save-draft').addEventListener('click', () => save(false));
-            $('#save-submit').addEventListener('click', () => save(true));
+            $('#save-draft').addEventListener('click', (event) => save(false, event.currentTarget));
+            $('#save-submit').addEventListener('click', (event) => save(true, event.currentTarget));
         } catch (error) {
             toast(error.message, 'error');
         }
@@ -648,21 +945,30 @@
                             <label class="check-item"><input type="radio" name="audit-result" value="reject"> 驳回修改</label>
                         </div>
                     </div>
-                    <label class="field"><span>审核意见</span><textarea id="audit-remark" maxlength="500" placeholder="驳回时必须填写审核意见"></textarea></label>`,
+                    <label class="field"><span>审核意见<small class="char-count">驳回必填</small></span><textarea id="audit-remark" maxlength="500" placeholder="通过可选填；驳回时必须填写审核意见"></textarea></label>`,
                 footer: '<button class="btn" data-close>取消</button><button class="btn btn-primary" id="audit-submit">提交审核结论</button>'
             });
-            $('[data-close]').addEventListener('click', closeModal);
-            $('#audit-submit').addEventListener('click', async () => {
+            $('[data-close]').addEventListener('click', () => closeModal());
+            $$('input[name="audit-result"]').forEach((radio) => {
+                radio.addEventListener('change', () => {
+                    if (radio.value === 'reject' && radio.checked) $('#audit-remark').focus();
+                });
+            });
+            $('#audit-submit').addEventListener('click', async (event) => {
                 const approved = $('input[name="audit-result"]:checked').value === 'approve';
                 const remark = $('#audit-remark').value.trim();
                 if (!approved && !remark) return toast('驳回时必须填写审核意见', 'error');
+                const button = event.currentTarget;
+                setBusy(button, true);
                 try {
                     await api(`/api/articles/${id}/audit`, {method: 'POST', body: {approved, remark}});
-                    closeModal();
+                    closeModal(true);
                     toast(approved ? '审核通过' : '已驳回', 'success');
                     await loadArticles();
                 } catch (error) {
                     toast(error.message, 'error');
+                } finally {
+                    setBusy(button, false);
                 }
             });
         } catch (error) {
@@ -680,10 +986,14 @@
         await loadTree();
         const rows = flattenTree(state.allTree);
         const manage = has('category:manage');
+        const enabled = rows.filter((node) => node.status === 1).length;
         $('#content').innerHTML = `
             <div class="toolbar">
                 <div class="toolbar-actions">${manage ? '<button class="btn btn-primary" id="new-category">＋ 新建顶级分类</button>' : ''}</div>
-                <span class="muted small">共 ${rows.length} 个分类节点 · 停用分类不可挂载新文章</span>
+                <div class="toolbar-actions">
+                    <span class="muted small">共 ${rows.length} 个节点 · 启用 ${enabled} 个 · 停用分类不可挂载新文章</span>
+                    <button class="btn btn-ghost" id="refresh-categories">↻ 刷新</button>
+                </div>
             </div>
             <div class="card">
                 <div class="table-wrap"><table class="data-table">
@@ -702,11 +1012,12 @@
                                 <button class="btn-link" data-cat-action="toggle" data-id="${node.id}">${node.status === 1 ? '停用' : '启用'}</button>
                                 <button class="btn-link danger" data-cat-action="delete" data-id="${node.id}">删除</button>
                             </div></td>` : ''}
-                        </tr>`).join('') : '<tr><td colspan="6"><div class="empty-state">暂无分类</div></td></tr>'}
+                        </tr>`).join('') : '<tr><td colspan="6"><div class="empty-state"><span class="empty-icon">⌘</span><strong>暂无分类</strong>创建顶级分类后即可挂载文章</div></td></tr>'}
                     </tbody>
                 </table></div>
             </div>`;
         $('#new-category')?.addEventListener('click', () => openCategoryForm(null, 0));
+        $('#refresh-categories').addEventListener('click', () => renderCategories());
         $('.data-table', $('#content')).addEventListener('click', (event) => {
             const button = event.target.closest('button[data-cat-action]');
             if (!button) return;
@@ -736,8 +1047,8 @@
             </form>`,
             footer: '<button class="btn" data-close>取消</button><button class="btn btn-primary" id="category-save">保存</button>'
         });
-        $('[data-close]').addEventListener('click', closeModal);
-        $('#category-save').addEventListener('click', async () => {
+        $('[data-close]').addEventListener('click', () => closeModal());
+        $('#category-save').addEventListener('click', async (event) => {
             const name = $('#cf-name').value.trim();
             if (name.length < 2) return toast('分类名称至少 2 个字符', 'error');
             const payload = {
@@ -747,21 +1058,25 @@
                 status: Number($('#cf-status').value),
                 description: $('#cf-desc').value.trim()
             };
+            const button = event.currentTarget;
+            setBusy(button, true);
             try {
                 if (node) await api(`/api/categories/${node.id}`, {method: 'PUT', body: payload});
                 else await api('/api/categories', {method: 'POST', body: payload});
-                closeModal();
+                closeModal(true);
                 toast('分类已保存', 'success');
                 await renderCategories();
             } catch (error) {
                 toast(error.message, 'error');
+            } finally {
+                setBusy(button, false);
             }
         });
     }
 
     async function toggleCategory(node) {
         const next = node.status === 1 ? 0 : 1;
-        if (!confirm(`确定${next === 1 ? '启用' : '停用'}分类「${node.name}」吗？`)) return;
+        if (!(await confirmDialog({title: next === 1 ? '启用分类' : '停用分类', message: `确定${next === 1 ? '启用' : '停用'}分类「${node.name}」吗？`, confirmText: next === 1 ? '启用' : '停用'}))) return;
         try {
             await api(`/api/categories/${node.id}/status`, {method: 'PUT', body: {status: next}});
             toast('分类状态已更新', 'success');
@@ -772,7 +1087,7 @@
     }
 
     async function deleteCategory(node) {
-        if (!confirm(`确定删除分类「${node.name}」吗？存在子分类或文章时将被拒绝。`)) return;
+        if (!(await confirmDialog({title: '删除分类', message: `确定删除分类「${node.name}」吗？存在子分类或文章时将被拒绝。`, confirmText: '删除', danger: true}))) return;
         try {
             await api(`/api/categories/${node.id}`, {method: 'DELETE'});
             toast('分类已删除', 'success');
@@ -806,7 +1121,10 @@
         $('#content').innerHTML = `
             <div class="toolbar">
                 <div class="toolbar-actions"><button class="btn btn-primary" id="new-user">＋ 新增用户</button></div>
-                <span class="muted small">注册用户默认为“待审批”，启用后方可登录</span>
+                <div class="toolbar-actions">
+                    <span class="muted small">注册用户默认为“待审批”，启用后方可登录</span>
+                    <button class="btn btn-ghost" id="refresh-users">↻ 刷新</button>
+                </div>
             </div>
             <form class="card filters" id="user-filters">
                 <label class="field"><span>关键字</span><input name="keyword" value="${esc(state.user.keyword)}" placeholder="用户名或昵称"></label>
@@ -833,6 +1151,7 @@
             renderUsers();
         });
         $('#new-user').addEventListener('click', openUserForm);
+        $('#refresh-users').addEventListener('click', () => loadUsers());
         $('#user-body').addEventListener('click', (event) => {
             const button = event.target.closest('button[data-user-action]');
             if (!button) return;
@@ -846,7 +1165,7 @@
             const page = await api('/api/users?' + qs(state.user));
             const body = $('#user-body');
             if (!page.records.length) {
-                body.innerHTML = '<tr><td colspan="6"><div class="empty-state">没有匹配的用户</div></td></tr>';
+                body.innerHTML = '<tr><td colspan="6"><div class="empty-state"><span class="empty-icon">♟</span><strong>没有匹配的用户</strong>调整关键字或状态筛选后重试</div></td></tr>';
             } else {
                 body.innerHTML = page.records.map((user) => {
                     const self = user.id === state.me.id;
@@ -902,24 +1221,34 @@
             </form>`,
             footer: '<button class="btn" data-close>取消</button><button class="btn btn-primary" id="user-save">创建用户</button>'
         });
-        $('[data-close]').addEventListener('click', closeModal);
-        $('#user-save').addEventListener('click', async () => {
+        $('[data-close]').addEventListener('click', () => closeModal());
+        $('#user-save').addEventListener('click', async (event) => {
+            const username = $('#uf-username').value.trim();
+            const password = $('#uf-password').value;
+            const nickname = $('#uf-nickname').value.trim();
+            if (!/^[A-Za-z0-9_]{4,32}$/.test(username)) return toast('用户名需为 4-32 位字母、数字或下划线', 'error');
+            if (password.length < 8) return toast('密码至少 8 位', 'error');
+            if (!nickname) return toast('请填写昵称', 'error');
             const roleIds = $$('input[name="user-role"]:checked').map((input) => Number(input.value));
             const payload = {
-                username: $('#uf-username').value.trim(),
-                password: $('#uf-password').value,
-                nickname: $('#uf-nickname').value.trim(),
+                username,
+                password,
+                nickname,
                 email: $('#uf-email').value.trim(),
                 status: Number($('#uf-status').value),
                 roleIds
             };
+            const button = event.currentTarget;
+            setBusy(button, true);
             try {
                 await api('/api/users', {method: 'POST', body: payload});
-                closeModal();
+                closeModal(true);
                 toast('用户创建成功', 'success');
                 await loadUsers();
             } catch (error) {
                 toast(error.message, 'error');
+            } finally {
+                setBusy(button, false);
             }
         });
     }
@@ -931,7 +1260,7 @@
             if (action === 'approve' || action === 'enable' || action === 'disable') {
                 const status = action === 'disable' ? 0 : 1;
                 const label = status === 1 ? '启用' : '禁用';
-                if (!confirm(`确定${label}用户「${row.nickname}」吗？`)) return;
+                if (!(await confirmDialog({title: label + '用户', message: `确定${label}用户「${row.nickname}」吗？`, confirmText: label, danger: status === 0}))) return;
                 await api(`/api/users/${id}/status`, {method: 'PUT', body: {status}});
                 toast(`用户已${label}`, 'success');
                 await loadUsers();
@@ -940,7 +1269,7 @@
             if (action === 'roles') return openUserRoles(row);
             if (action === 'password') return openResetPassword(row);
             if (action === 'delete') {
-                if (!confirm(`确定删除用户「${row.nickname}」吗？`)) return;
+                if (!(await confirmDialog({title: '删除用户', message: `确定删除用户「${row.nickname}」吗？`, confirmText: '删除', danger: true}))) return;
                 await api(`/api/users/${id}`, {method: 'DELETE'});
                 toast('用户已删除', 'success');
                 await loadUsers();
@@ -958,16 +1287,20 @@
                    <p class="muted small">角色决定用户可访问的接口权限；修改后用户下次进入页面时重新加载权限。</p>`,
             footer: '<button class="btn" data-close>取消</button><button class="btn btn-primary" id="roles-save">保存</button>'
         });
-        $('[data-close]').addEventListener('click', closeModal);
-        $('#roles-save').addEventListener('click', async () => {
+        $('[data-close]').addEventListener('click', () => closeModal());
+        $('#roles-save').addEventListener('click', async (event) => {
             const roleIds = $$('input[name="user-role"]:checked').map((input) => Number(input.value));
+            const button = event.currentTarget;
+            setBusy(button, true);
             try {
                 await api(`/api/users/${user.id}/roles`, {method: 'PUT', body: {roleIds}});
-                closeModal();
+                closeModal(true);
                 toast('角色已更新', 'success');
                 await loadUsers();
             } catch (error) {
                 toast(error.message, 'error');
+            } finally {
+                setBusy(button, false);
             }
         });
     }
@@ -976,17 +1309,24 @@
         openModal({
             title: '重置密码',
             subtitle: `${user.nickname}（@${user.username}）`,
-            body: `<label class="field"><span>新密码 *</span><input id="rp-password" type="password" maxlength="32" placeholder="8-32 位，含字母和数字"></label>`,
+            body: `<label class="field"><span>新密码 *</span><input id="rp-password" type="password" maxlength="32" placeholder="8-32 位，含字母和数字" autocomplete="new-password"></label>
+                   <p class="muted small">重置后请通过安全渠道将新密码告知用户。</p>`,
             footer: '<button class="btn" data-close>取消</button><button class="btn btn-primary" id="rp-save">重置</button>'
         });
-        $('[data-close]').addEventListener('click', closeModal);
-        $('#rp-save').addEventListener('click', async () => {
+        $('[data-close]').addEventListener('click', () => closeModal());
+        $('#rp-save').addEventListener('click', async (event) => {
+            const password = $('#rp-password').value;
+            if (password.length < 8) return toast('密码至少 8 位', 'error');
+            const button = event.currentTarget;
+            setBusy(button, true);
             try {
-                await api(`/api/users/${user.id}/password`, {method: 'PUT', body: {newPassword: $('#rp-password').value}});
-                closeModal();
+                await api(`/api/users/${user.id}/password`, {method: 'PUT', body: {newPassword: password}});
+                closeModal(true);
                 toast('密码已重置', 'success');
             } catch (error) {
                 toast(error.message, 'error');
+            } finally {
+                setBusy(button, false);
             }
         });
     }
@@ -999,10 +1339,13 @@
         $('#content').innerHTML = `
             <div class="toolbar">
                 <div class="toolbar-actions"><button class="btn btn-primary" id="new-role">＋ 新建角色</button></div>
-                <span class="muted small">权限码通过 Spring AOP 在接口层校验</span>
+                <div class="toolbar-actions">
+                    <span class="muted small">共 ${roles.length} 个角色 · 权限码通过 Spring AOP 在接口层校验</span>
+                    <button class="btn btn-ghost" id="refresh-roles">↻ 刷新</button>
+                </div>
             </div>
             <div class="role-grid">
-                ${roles.map((role) => `
+                ${roles.length ? roles.map((role) => `
                     <div class="role-card">
                         <div class="role-card-head">
                             <div><h4>${esc(role.roleName)}</h4><span class="role-code">${esc(role.roleCode)}</span></div>
@@ -1010,16 +1353,17 @@
                         </div>
                         <p class="role-desc">${esc(role.remark || '暂无备注')}</p>
                         <div class="role-foot">
-                            <span class="muted small">${(role.permissionIds || []).length} 个权限点</span>
+                            <span class="muted small">${(role.permissionIds || []).length} / ${state.permissions.length} 个权限点</span>
                             <div class="action-group">
                                 <button class="btn-link" data-role-action="edit" data-id="${role.id}">编辑</button>
                                 <button class="btn-link" data-role-action="perms" data-id="${role.id}">配置权限</button>
                                 ${role.roleCode === 'ADMIN' ? '' : `<button class="btn-link danger" data-role-action="delete" data-id="${role.id}">删除</button>`}
                             </div>
                         </div>
-                    </div>`).join('')}
+                    </div>`).join('') : '<div class="card empty-state"><span class="empty-icon">⛨</span><strong>暂无角色</strong>新建角色并分配权限后，用户才能访问对应模块</div>'}
             </div>`;
         $('#new-role').addEventListener('click', () => openRoleForm(null));
+        $('#refresh-roles').addEventListener('click', () => renderRoles());
         $('.role-grid', $('#content')).addEventListener('click', (event) => {
             const button = event.target.closest('button[data-role-action]');
             if (!button) return;
@@ -1042,23 +1386,31 @@
             </form>`,
             footer: '<button class="btn" data-close>取消</button><button class="btn btn-primary" id="role-save">保存</button>'
         });
-        $('[data-close]').addEventListener('click', closeModal);
-        $('#role-save').addEventListener('click', async () => {
+        $('[data-close]').addEventListener('click', () => closeModal());
+        $('#role-save').addEventListener('click', async (event) => {
+            const roleName = $('#rf-name').value.trim();
+            const roleCode = $('#rf-code').value.trim().toUpperCase();
+            if (!roleName) return toast('请填写角色名称', 'error');
+            if (!/^[A-Z][A-Z0-9_]{1,29}$/.test(roleCode)) return toast('角色编码需为大写字母开头的 2-30 位字母、数字或下划线', 'error');
             const payload = {
-                roleName: $('#rf-name').value.trim(),
-                roleCode: $('#rf-code').value.trim().toUpperCase(),
+                roleName,
+                roleCode,
                 status: Number($('#rf-status').value),
                 remark: $('#rf-remark').value.trim()
             };
+            const button = event.currentTarget;
+            setBusy(button, true);
             try {
                 if (role) await api(`/api/roles/${role.id}`, {method: 'PUT', body: payload});
                 else await api('/api/roles', {method: 'POST', body: payload});
-                closeModal();
+                closeModal(true);
                 state.rolesLoaded = false;
                 toast('角色已保存', 'success');
                 await renderRoles();
             } catch (error) {
                 toast(error.message, 'error');
+            } finally {
+                setBusy(button, false);
             }
         });
     }
@@ -1083,32 +1435,46 @@
         openModal({
             title: '配置角色权限',
             subtitle: `${role.roleName} · ${role.roleCode}`,
-            body: `<div class="toolbar" style="margin-bottom:12px"><span class="muted small">勾选后立即生效，相关用户下次请求时重新加载</span><button type="button" class="btn btn-sm" id="perm-toggle-all">全选 / 清空</button></div>
+            body: `<div class="toolbar" style="margin-bottom:12px">
+                       <span class="muted small">已选择 <b id="perm-count">0</b> / ${state.permissions.length} 个权限点，保存后立即生效</span>
+                       <button type="button" class="btn btn-sm" id="perm-toggle-all">全选 / 清空</button>
+                   </div>
                    <div id="perm-groups">${permissionGroups(role.permissionIds || [])}</div>`,
             footer: '<button class="btn" data-close>取消</button><button class="btn btn-primary" id="perm-save">保存权限</button>'
         });
-        $('[data-close]').addEventListener('click', closeModal);
+        const updatePermCount = () => {
+            $('#perm-count').textContent = $$('input[name="perm"]:checked').length;
+        };
+        $$('input[name="perm"]').forEach((box) => box.addEventListener('change', updatePermCount));
+        updatePermCount();
+        $('[data-close]').addEventListener('click', () => closeModal());
         $('#perm-toggle-all').addEventListener('click', () => {
             const boxes = $$('input[name="perm"]');
             const allChecked = boxes.every((box) => box.checked);
             boxes.forEach((box) => { box.checked = !allChecked; });
+            updatePermCount();
         });
-        $('#perm-save').addEventListener('click', async () => {
+        $('#perm-save').addEventListener('click', async (event) => {
             const permissionIds = $$('input[name="perm"]:checked').map((input) => Number(input.value));
+            if (!(await confirmDialog({title: '保存角色权限', message: `将把角色的权限点调整为 ${permissionIds.length} 个，确定保存吗？`, confirmText: '保存'}))) return;
+            const button = event.currentTarget;
+            setBusy(button, true);
             try {
                 await api(`/api/roles/${role.id}/permissions`, {method: 'PUT', body: {permissionIds}});
-                closeModal();
+                closeModal(true);
                 state.rolesLoaded = false;
                 toast('角色权限已更新', 'success');
                 await renderRoles();
             } catch (error) {
                 toast(error.message, 'error');
+            } finally {
+                setBusy(button, false);
             }
         });
     }
 
     async function deleteRole(role) {
-        if (!confirm(`确定删除角色「${role.roleName}」吗？仍绑定用户时会被拒绝。`)) return;
+        if (!(await confirmDialog({title: '删除角色', message: `确定删除角色「${role.roleName}」吗？仍绑定用户时会被拒绝。`, confirmText: '删除', danger: true}))) return;
         try {
             await api(`/api/roles/${role.id}`, {method: 'DELETE'});
             state.rolesLoaded = false;
@@ -1128,7 +1494,7 @@
                 <label class="field"><span>结果</span><select name="success"><option value="">全部</option><option value="1" ${state.log.success === '1' ? 'selected' : ''}>成功</option><option value="0" ${state.log.success === '0' ? 'selected' : ''}>失败</option></select></label>
                 <label class="field"><span>开始日期</span><input type="date" name="startDate" value="${esc(state.log.startDate)}"></label>
                 <label class="field"><span>结束日期</span><input type="date" name="endDate" value="${esc(state.log.endDate)}"></label>
-                <div class="filter-actions"><button class="btn btn-primary" type="submit">筛选</button><button class="btn" type="button" id="reset-log-filter">重置</button></div>
+                <div class="filter-actions"><button class="btn btn-primary" type="submit">筛选</button><button class="btn" type="button" id="reset-log-filter">重置</button><button class="btn" type="button" id="refresh-logs">↻ 刷新</button></div>
             </form>
             <div class="card">
                 <div class="table-wrap"><table class="data-table">
@@ -1145,6 +1511,10 @@
             state.log.success = form.get('success') || '';
             state.log.startDate = form.get('startDate') || '';
             state.log.endDate = form.get('endDate') || '';
+            if (state.log.startDate && state.log.endDate && state.log.startDate > state.log.endDate) {
+                toast('开始日期不能晚于结束日期', 'error');
+                return;
+            }
             state.log.pageNum = 1;
             loadLogs();
         });
@@ -1152,6 +1522,7 @@
             state.log = {...state.log, pageNum: 1, module: '', username: '', success: '', startDate: '', endDate: ''};
             renderLogs();
         });
+        $('#refresh-logs').addEventListener('click', () => loadLogs());
         $('#log-body').addEventListener('click', (event) => {
             const button = event.target.closest('button[data-log-id]');
             if (!button) return;
@@ -1167,7 +1538,7 @@
             state.logRows = page.records || [];
             const body = $('#log-body');
             if (!page.records.length) {
-                body.innerHTML = '<tr><td colspan="8"><div class="empty-state">没有匹配的操作日志</div></td></tr>';
+                body.innerHTML = '<tr><td colspan="8"><div class="empty-state"><span class="empty-icon">◷</span><strong>没有匹配的操作日志</strong>调整模块、操作人或时间范围后重试</div></td></tr>';
             } else {
                 body.innerHTML = page.records.map((log) => `
                     <tr>
@@ -1181,13 +1552,17 @@
                         <td><button class="btn-link" data-log-id="${log.id}">详情</button></td>
                     </tr>`).join('');
             }
-            $('#log-pager').innerHTML = pagerHtml(page, '条日志');
+            $('#log-pager').innerHTML = pagerHtml(page, '条日志', {sizes: [10, 20, 50], pageSize: state.log.pageSize});
             bindPager($('#log-pager'), page, (next) => {
                 state.log.pageNum = next;
                 loadLogs();
+            }, (size) => {
+                state.log.pageSize = size;
+                state.log.pageNum = 1;
+                loadLogs();
             });
         } catch (error) {
-            $('#log-body').innerHTML = `<tr><td colspan="8"><div class="empty-state">${esc(error.message)}</div></td></tr>`;
+            $('#log-body').innerHTML = `<tr><td colspan="8"><div class="empty-state"><span class="empty-icon">⚠</span>${esc(error.message)}</div></td></tr>`;
             toast(error.message, 'error');
         }
     }
@@ -1214,49 +1589,103 @@
                 ${log.errorMsg ? `<h4 style="margin:16px 0 8px;font-size:13px">错误信息</h4><div class="code-block" style="color:#fecaca">${esc(log.errorMsg)}</div>` : ''}`,
             footer: '<button class="btn" data-close>关闭</button>'
         });
-        $('[data-close]').addEventListener('click', closeModal);
+        $('[data-close]').addEventListener('click', () => closeModal());
     }
 
     /* ------------------------------ 登录绑定 ------------------------------ */
+    const REMEMBER_KEY = 'atlas.cms.username';
+
+    function showLoginError(message) {
+        const box = $('#login-error');
+        box.textContent = message;
+        box.hidden = !message;
+    }
+
     $('#login-form').addEventListener('submit', async (event) => {
         event.preventDefault();
         const button = $('#login-button');
-        button.disabled = true;
-        button.textContent = '登录中…';
+        const username = $('#login-username').value.trim();
+        const password = $('#login-password').value;
+        if (!username) {
+            showLoginError('请输入用户名');
+            $('#login-username').focus();
+            return;
+        }
+        if (!password) {
+            showLoginError('请输入密码');
+            $('#login-password').focus();
+            return;
+        }
+        showLoginError('');
+        setBusy(button, true, '登录中…');
         try {
             state.me = await api('/api/auth/login', {
                 method: 'POST',
                 auth: false,
-                body: {
-                    username: $('#login-username').value.trim(),
-                    password: $('#login-password').value
-                }
+                body: {username, password}
             });
+            if ($('#remember-username').checked) {
+                localStorage.setItem(REMEMBER_KEY, username);
+            } else {
+                localStorage.removeItem(REMEMBER_KEY);
+            }
             await enterApp();
             toast('登录成功，欢迎回来', 'success');
         } catch (error) {
-            toast(error.message, 'error');
+            showLoginError(error.message);
         } finally {
-            button.disabled = false;
-            button.textContent = '登 录';
+            setBusy(button, false);
         }
+    });
+
+    $('#password-toggle').addEventListener('click', (event) => {
+        const input = $('#login-password');
+        const show = input.type === 'password';
+        input.type = show ? 'text' : 'password';
+        event.currentTarget.textContent = show ? '隐藏' : '显示';
+        event.currentTarget.setAttribute('aria-label', show ? '隐藏密码' : '显示密码');
+        event.currentTarget.setAttribute('aria-pressed', String(show));
     });
 
     $$('.demo-accounts button').forEach((button) => {
         button.addEventListener('click', () => {
             $('#login-username').value = button.dataset.user;
             $('#login-password').value = button.dataset.pass;
+            showLoginError('');
         });
     });
 
     $('#logout-button').addEventListener('click', async () => {
+        const ok = await confirmDialog({title: '退出登录', message: '确定要退出当前账号吗？', confirmText: '退出'});
+        if (!ok) return;
         try {
             await api('/api/auth/logout', {method: 'POST'});
         } catch (error) { /* 忽略退出异常 */ }
         state.me = null;
+        history.replaceState(null, '', '#/dashboard');
         showLogin();
         toast('已退出登录');
     });
+
+    $('#sidebar-toggle').addEventListener('click', () => {
+        setSidebar(!$('#app').classList.contains('nav-open'));
+    });
+    $('#sidebar-backdrop').addEventListener('click', () => setSidebar(false));
+    window.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') setSidebar(false);
+    });
+    window.addEventListener('online', probeService);
+    window.addEventListener('offline', () => {
+        $('#service-dot').classList.add('is-offline');
+        $('#service-dot').classList.remove('is-pending');
+        $('#service-status').textContent = '网络已断开';
+    });
+
+    const remembered = localStorage.getItem(REMEMBER_KEY);
+    if (remembered) {
+        $('#login-username').value = remembered;
+        $('#remember-username').checked = true;
+    }
 
     boot();
 })();

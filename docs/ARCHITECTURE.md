@@ -316,7 +316,7 @@ sequenceDiagram
 
 ## 8. 部署与可观测性
 
-- `target/cms.jar` 为可执行 JAR，支持 `--spring.profiles.active=mysql`；
+- `target/cms.war` 为可执行 WAR（内嵌 Tomcat），支持 `--spring.profiles.active=mysql`，也可部署到外部 Tomcat 9；
 - H2 环境使用内存库和自动初始化，适合演示/测试；
 - Druid 提供连接池监控与 SQL 统计（`/druid/`，仅本机）；
 - Spring Boot 健康端点 `/api/health` 可直接用于探活；

@@ -56,7 +56,7 @@
 | 4 | 分类/角色事件绑定使用 `{once:true}`，第二次操作失效 | 绑定到新渲染的子元素，移除 `once` | 浏览器重复操作正常 |
 | 5 | 登录页初始化调用 `/api/auth/me` 返回 401 时清空演示密码 | `showLogin(false)` 保留初始填充；退出/失效时仍清空 | 浏览器登录流程稳定 |
 | 6 | 浏览器控制台 favicon 404 | 增加 `favicon.svg` 并在页面引用 | 冒烟无 favicon 404 |
-| 7 | 端口占用导致 JAR 无法重命名 | 查找并结束旧进程后重新打包 | `target/cms.jar` 重建成功 |
+| 7 | 端口占用导致构建产物无法重命名 | 查找并结束旧进程后重新打包 | `target/cms.war` 重建成功 |
 | 8 | 冒烟脚本重复运行命中旧文章导致断言失败 | 标题加入时间戳，保证每次数据唯一 | 冒烟可重复执行 |
 | 9 | 切换 MySQL 9.5 后，最小化测试实例未加载时区表，强制会话时区导致 `Unknown or incorrect time zone` | 保留客户端 `connectionTimeZone=Asia/Shanghai`，移除 `forceConnectionTimeZoneToSession=true` | MySQL 9.5 实例启动成功，健康检查与浏览器冒烟通过 |
 | 10 | Windows 控制台默认字符集导入含中文的 `02_data.sql`，报 `Incorrect string value ... for column 'perm_name'` | 导入命令增加 `--default-character-set=utf8mb4`，并在文档中注明 | 重新导入成功：5 个用户、6 篇文章、13 个权限点 |
@@ -69,7 +69,7 @@
 - [ ] 阅读并理解 `PermissionAspect` 的权限码校验与切面顺序；
 - [ ] 阅读并理解 `OperationLogAspect` 的参数脱敏与异常处理；
 - [ ] 本地执行 `mvn -q test`，确认 22 个测试全部通过；
-- [ ] 本地启动 `target/cms.jar`，用 5 个演示账号分别登录验证；
+- [ ] 本地启动 `target/cms.war`，用 5 个演示账号分别登录验证；
 - [ ] 完整走一遍“新建草稿 → 提交 → 审核 → 发布 → 下架”；
 - [ ] 用作者账号直接调用审核接口，确认返回 403；
 - [ ] 打开日志详情，确认密码显示为 `******`；

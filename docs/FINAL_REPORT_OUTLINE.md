@@ -184,7 +184,7 @@
 ### 第 6 章 部署与运行（建议 3–4 页）
 
 - 6.1 环境要求：JDK 17、Maven、可选 MySQL 9.5。
-- 6.2 H2 演示部署：`mvn clean package -DskipTests`、`java -jar target/cms.jar`。
+- 6.2 H2 演示部署：`mvn clean package -DskipTests`、`java -jar target/cms.war`。
 - 6.3 MySQL 部署：
   - 执行 `sql/01_schema.sql`、`sql/02_data.sql`；
   - 使用 `--spring.profiles.active=mysql`；
