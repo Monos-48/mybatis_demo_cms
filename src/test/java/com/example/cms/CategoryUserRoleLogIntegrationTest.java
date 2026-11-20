@@ -254,6 +254,62 @@ class CategoryUserRoleLogIntegrationTest extends BaseIntegrationTest {
                 .andExpect(jsonPath("$.data.records[0].username").value("admin"));
     }
 
+    @Test
+    void operationLogMasksPasswordsContainingQuotes() throws Exception {
+        MockHttpSession admin = loginAdmin();
+        String username = "reg_quote_001";
+        String trickyPassword = "Abc12345\"SecretTail";
+
+        Map<String, Object> register = new LinkedHashMap<>();
+        register.put("username", username);
+        register.put("password", trickyPassword);
+        register.put("nickname", "引号密码测试");
+        register.put("email", "quote@example.com");
+        mockMvc.perform(post("/api/auth/register")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(register)))
+                .andExpect(status().isOk());
+
+        // 注册用户处于待审批状态，登录会被拒绝；失败请求同样写日志，参数也要完整脱敏
+        mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(loginJson(username, trickyPassword)))
+                .andExpect(status().isForbidden());
+
+        MvcResult result = mockMvc.perform(get("/api/logs")
+                        .session(admin)
+                        .param("module", "认证管理")
+                        .param("pageSize", "100"))
+                .andExpect(status().isOk())
+                .andReturn();
+        JsonNode records = responseBody(result).path("data").path("records");
+
+        int matched = 0;
+        for (JsonNode record : records) {
+            String params = record.path("params").asText();
+            if (!params.contains(username)) {
+                continue;
+            }
+            matched++;
+            if (params.contains("SecretTail")) {
+                throw new AssertionError("操作日志泄露了引号后的密码片段：" + params);
+            }
+            JsonNode parsed;
+            try {
+                parsed = objectMapper.readTree(params);
+            } catch (Exception ex) {
+                throw new AssertionError("脱敏后的参数不是合法 JSON：" + params, ex);
+            }
+            if (!parsed.isArray() || parsed.size() == 0
+                    || !"******".equals(parsed.get(0).path("password").asText())) {
+                throw new AssertionError("密码字段未被正确脱敏：" + params);
+            }
+        }
+        if (matched < 2) {
+            throw new AssertionError("未找到注册与登录两条脱敏日志，matched=" + matched);
+        }
+    }
+
     private long createCategory(MockHttpSession session, String name, long parentId) throws Exception {
         MvcResult result = mockMvc.perform(post("/api/categories")
                         .session(session)

@@ -7,7 +7,9 @@ import com.example.cms.entity.SysOperLog;
 import com.example.cms.mapper.SysOperLogMapper;
 import com.example.cms.util.IpUtils;
 import com.example.cms.util.SecurityUtils;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.annotation.Around;
 import org.aspectj.lang.annotation.Aspect;
@@ -25,6 +27,8 @@ import javax.servlet.ServletResponse;
 import javax.servlet.http.HttpServletRequest;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
+import java.util.Set;
 
 /**
  * 操作日志切面：记录操作人、模块、方法、参数、IP、耗时与成功状态。
@@ -37,7 +41,9 @@ public class OperationLogAspect {
 
     private static final Logger log = LoggerFactory.getLogger(OperationLogAspect.class);
     private static final int MAX_PARAMS_LENGTH = 2000;
-    private static final String PASSWORD_MASK = "(\"(?:password|newPassword|oldPassword|passwordConfirm)\"\\s*:\\s*\")[^\"]*(\")";
+    /** 需要脱敏的字段名（小写比较），覆盖嵌套对象与数组中的同名字段。 */
+    private static final Set<String> SENSITIVE_FIELDS = Set.of(
+            "password", "newpassword", "oldpassword", "passwordconfirm");
 
     private final SysOperLogMapper operLogMapper;
     private final ObjectMapper objectMapper;
@@ -131,11 +137,39 @@ public class OperationLogAspect {
             loggable.add(arg);
         }
         try {
-            String json = objectMapper.writeValueAsString(loggable);
-            json = json.replaceAll(PASSWORD_MASK, "$1******$2");
-            return truncate(json, MAX_PARAMS_LENGTH);
+            // 先转成 JSON 树按字段名脱敏，再序列化。
+            // 不能对序列化后的字符串用正则替换：密码中的双引号会被转义为 \"，
+            // 正则会提前截断，导致后半段密码泄露且 JSON 结构被破坏。
+            JsonNode tree = objectMapper.valueToTree(loggable);
+            maskSensitiveFields(tree);
+            return truncate(objectMapper.writeValueAsString(tree), MAX_PARAMS_LENGTH);
         } catch (Exception ex) {
             return "[参数序列化失败]";
+        }
+    }
+
+    /**
+     * 递归脱敏：对象按字段名匹配，数组逐元素下钻，兼容 DTO、Map 与嵌套结构。
+     */
+    private void maskSensitiveFields(JsonNode node) {
+        if (node == null) {
+            return;
+        }
+        if (node.isObject()) {
+            ObjectNode object = (ObjectNode) node;
+            List<String> fieldNames = new ArrayList<>();
+            object.fieldNames().forEachRemaining(fieldNames::add);
+            for (String fieldName : fieldNames) {
+                if (SENSITIVE_FIELDS.contains(fieldName.toLowerCase(Locale.ROOT))) {
+                    object.put(fieldName, "******");
+                } else {
+                    maskSensitiveFields(object.get(fieldName));
+                }
+            }
+        } else if (node.isArray()) {
+            for (JsonNode child : node) {
+                maskSensitiveFields(child);
+            }
         }
     }
 
