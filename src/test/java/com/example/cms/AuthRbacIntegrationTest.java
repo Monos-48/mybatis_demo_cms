@@ -10,8 +10,10 @@ import java.util.Map;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.hasItem;
 import static org.hamcrest.Matchers.hasSize;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -144,6 +146,30 @@ class AuthRbacIntegrationTest extends BaseIntegrationTest {
                 .andExpect(jsonPath("$.message").value(containsString("密码")))
                 .andExpect(jsonPath("$.message").value(containsString("昵称")))
                 .andExpect(jsonPath("$.message").value(containsString("邮箱")));
+    }
+
+    @Test
+    void downgradedManagerLosesDataPermissionInExistingSession() throws Exception {
+        MockHttpSession editor = login("editor", "editor123");
+        MockHttpSession admin = loginAdmin();
+
+        // 管理员把 editor（用户 2）从 EDITOR 降级为 AUTHOR（角色 3）
+        mockMvc.perform(put("/api/users/2/roles")
+                        .session(admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"roleIds\":[3]}"))
+                .andExpect(status().isOk());
+
+        // 不调用 /api/auth/me，直接复用旧会话操作 author（用户 3）的文章 1。
+        // AUTHOR 仍拥有 article:delete / article:submit 接口权限，
+        // 但业务层必须按数据库中的最新角色判定，不能再以 EDITOR 身份绕过归属校验。
+        mockMvc.perform(delete("/api/articles/1").session(editor))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.message").value(containsString("自己")));
+
+        mockMvc.perform(post("/api/articles/1/submit").session(editor))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.message").value(containsString("自己")));
     }
 
     @Test
