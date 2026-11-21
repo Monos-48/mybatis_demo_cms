@@ -41,6 +41,9 @@ public class OperationLogAspect {
 
     private static final Logger log = LoggerFactory.getLogger(OperationLogAspect.class);
     private static final int MAX_PARAMS_LENGTH = 2000;
+    private static final int MAX_ERROR_LENGTH = 1000;
+    /** 单条长文本字段（如文章正文）在日志中保留的最大字符数。 */
+    private static final int MAX_TEXT_FIELD_LENGTH = 200;
     /** 需要脱敏的字段名（小写比较），覆盖嵌套对象与数组中的同名字段。 */
     private static final Set<String> SENSITIVE_FIELDS = Set.of(
             "password", "newpassword", "oldpassword", "passwordconfirm");
@@ -88,7 +91,7 @@ public class OperationLogAspect {
         operLog.setMethod(signature.getDeclaringType().getSimpleName() + "." + signature.getName());
         operLog.setCostTime(costTime);
         operLog.setSuccess(success);
-        operLog.setErrorMsg(truncate(errorMessage, 1000));
+        operLog.setErrorMsg(truncate(errorMessage, MAX_ERROR_LENGTH));
 
         if (actor != null) {
             operLog.setUserId(actor.getId());
@@ -142,6 +145,8 @@ public class OperationLogAspect {
             // 正则会提前截断，导致后半段密码泄露且 JSON 结构被破坏。
             JsonNode tree = objectMapper.valueToTree(loggable);
             maskSensitiveFields(tree);
+            // 文章正文等长文本只保留摘要，避免单条日志占满 2000 字符列
+            compactLargeTextFields(tree);
             return truncate(objectMapper.writeValueAsString(tree), MAX_PARAMS_LENGTH);
         } catch (Exception ex) {
             return "[参数序列化失败]";
@@ -173,10 +178,48 @@ public class OperationLogAspect {
         }
     }
 
+    /**
+     * 长文本字段压缩为“前 200 字符…(共 N 字符)”，既保留可读性又不挤占整条日志。
+     */
+    private void compactLargeTextFields(JsonNode node) {
+        if (node == null) {
+            return;
+        }
+        if (node.isObject()) {
+            ObjectNode object = (ObjectNode) node;
+            List<String> fieldNames = new ArrayList<>();
+            object.fieldNames().forEachRemaining(fieldNames::add);
+            for (String fieldName : fieldNames) {
+                JsonNode value = object.get(fieldName);
+                if ("content".equalsIgnoreCase(fieldName) && value.isTextual()
+                        && value.asText().length() > MAX_TEXT_FIELD_LENGTH) {
+                    String text = value.asText();
+                    object.put(fieldName, text.substring(0, MAX_TEXT_FIELD_LENGTH)
+                            + "...(共" + text.length() + "字符)");
+                } else {
+                    compactLargeTextFields(value);
+                }
+            }
+        } else if (node.isArray()) {
+            for (JsonNode child : node) {
+                compactLargeTextFields(child);
+            }
+        }
+    }
+
+    /**
+     * 截断到 maxLength 以内（含省略号），保证结果不会超过数据库列宽。
+     */
     private String truncate(String value, int maxLength) {
         if (value == null) {
             return null;
         }
-        return value.length() <= maxLength ? value : value.substring(0, maxLength) + "...";
+        if (value.length() <= maxLength) {
+            return value;
+        }
+        if (maxLength <= 3) {
+            return value.substring(0, maxLength);
+        }
+        return value.substring(0, maxLength - 3) + "...";
     }
 }
