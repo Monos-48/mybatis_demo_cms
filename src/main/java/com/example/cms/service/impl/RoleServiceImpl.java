@@ -32,6 +32,10 @@ import java.util.stream.Collectors;
 @Service
 public class RoleServiceImpl implements RoleService {
 
+    /** 内置管理员角色必须保留的恢复权限，防止误操作后无人能再进入管理界面。 */
+    private static final Set<String> ADMIN_REQUIRED_PERMISSIONS =
+            Set.of("user:manage", "role:manage");
+
     private final SysRoleMapper roleMapper;
     private final SysRolePermissionMapper rolePermissionMapper;
     private final SysPermissionMapper permissionMapper;
@@ -78,8 +82,12 @@ public class RoleServiceImpl implements RoleService {
     @Override
     public RoleVO update(Long id, RoleSaveDTO dto) {
         SysRole role = requireRole(id);
-        if ("ADMIN".equals(role.getRoleCode()) && !"ADMIN".equals(dto.getRoleCode())) {
+        boolean builtinAdmin = "ADMIN".equals(role.getRoleCode());
+        if (builtinAdmin && !"ADMIN".equals(dto.getRoleCode())) {
             throw new BusinessException("内置管理员角色编码不可修改");
+        }
+        if (builtinAdmin && dto.getStatus() != null && dto.getStatus() != 1) {
+            throw new BusinessException("内置管理员角色不可停用");
         }
         ensureRoleCodeUnique(dto.getRoleCode(), id);
         role.setRoleName(dto.getRoleName().trim());
@@ -112,12 +120,19 @@ public class RoleServiceImpl implements RoleService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void assignPermissions(Long id, List<Long> permissionIds) {
-        requireRole(id);
+        SysRole role = requireRole(id);
         List<Long> ids = distinct(permissionIds);
-        if (!ids.isEmpty()) {
-            List<SysPermission> permissions = permissionMapper.selectBatchIds(ids);
-            if (permissions.size() != ids.size()) {
-                throw new BusinessException("包含不存在的权限点");
+        List<SysPermission> permissions = ids.isEmpty()
+                ? Collections.emptyList() : permissionMapper.selectBatchIds(ids);
+        if (permissions.size() != ids.size()) {
+            throw new BusinessException("包含不存在的权限点");
+        }
+        if ("ADMIN".equals(role.getRoleCode())) {
+            Set<String> codes = permissions.stream()
+                    .map(SysPermission::getPermCode)
+                    .collect(Collectors.toSet());
+            if (!codes.containsAll(ADMIN_REQUIRED_PERMISSIONS)) {
+                throw new BusinessException("内置管理员角色必须保留用户管理与角色权限管理权限");
             }
         }
         rolePermissionMapper.delete(new LambdaQueryWrapper<SysRolePermission>()
