@@ -133,7 +133,19 @@ public class ArticleServiceImpl implements ArticleService {
         if (!manager && !ownEditable) {
             throw new BusinessException(409, "作者只能删除草稿或已驳回状态的文章");
         }
-        articleMapper.deleteById(id);
+
+        // 删除时再次约束版本与状态，避免“校验后、删除前”文章被并发提交/修改
+        LambdaQueryWrapper<CmsArticle> wrapper = new LambdaQueryWrapper<CmsArticle>()
+                .eq(CmsArticle::getId, id)
+                .eq(CmsArticle::getVersion, article.getVersion());
+        if (!manager) {
+            wrapper.eq(CmsArticle::getAuthorId, loginUser.getId())
+                    .in(CmsArticle::getStatus,
+                            ArticleStatus.DRAFT.getCode(), ArticleStatus.REJECTED.getCode());
+        }
+        if (articleMapper.delete(wrapper) != 1) {
+            throw new BusinessException(409, "文章状态已发生变化，请刷新后重试");
+        }
     }
 
     @Override
