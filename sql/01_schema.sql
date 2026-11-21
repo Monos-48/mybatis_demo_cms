@@ -92,7 +92,9 @@ CREATE TABLE cms_category (
     create_by BIGINT NULL COMMENT '创建人',
     update_by BIGINT NULL COMMENT '更新人',
     deleted TINYINT NOT NULL DEFAULT 0 COMMENT '逻辑删除',
+    active_name VARCHAR(50) GENERATED ALWAYS AS (CASE WHEN deleted = 0 THEN name ELSE NULL END) STORED COMMENT '有效分类名称：逻辑删除后为 NULL，用于同级唯一约束',
     PRIMARY KEY (id),
+    UNIQUE KEY uk_category_parent_name (parent_id, active_name),
     KEY idx_category_parent_sort (parent_id, sort)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '内容分类';
 

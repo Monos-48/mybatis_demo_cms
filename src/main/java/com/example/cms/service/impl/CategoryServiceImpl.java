@@ -11,6 +11,7 @@ import com.example.cms.mapper.CmsArticleMapper;
 import com.example.cms.mapper.CmsCategoryMapper;
 import com.example.cms.service.CategoryService;
 import com.example.cms.vo.CategoryVO;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -77,7 +78,12 @@ public class CategoryServiceImpl implements CategoryService {
         category.setSort(dto.getSort() == null ? 0 : dto.getSort());
         category.setStatus(dto.getStatus() == null ? EnableStatus.ENABLED.getCode() : dto.getStatus());
         category.setDescription(dto.getDescription());
-        categoryMapper.insert(category);
+        try {
+            categoryMapper.insert(category);
+        } catch (DataIntegrityViolationException ex) {
+            // 并发情况下两个请求都通过了 Java 重名校验，由数据库唯一索引兜底
+            throw new BusinessException(409, "同级分类下已存在同名分类");
+        }
         return category.getId();
     }
 
@@ -94,7 +100,11 @@ public class CategoryServiceImpl implements CategoryService {
         category.setSort(dto.getSort() == null ? category.getSort() : dto.getSort());
         category.setStatus(dto.getStatus() == null ? category.getStatus() : dto.getStatus());
         category.setDescription(dto.getDescription());
-        categoryMapper.updateById(category);
+        try {
+            categoryMapper.updateById(category);
+        } catch (DataIntegrityViolationException ex) {
+            throw new BusinessException(409, "同级分类下已存在同名分类");
+        }
     }
 
     @Override

@@ -80,9 +80,11 @@ CREATE TABLE cms_category (
     create_by BIGINT,
     update_by BIGINT,
     deleted TINYINT NOT NULL DEFAULT 0,
+    active_name VARCHAR(50) GENERATED ALWAYS AS (CASE WHEN deleted = 0 THEN name ELSE NULL END),
     PRIMARY KEY (id)
 );
 CREATE INDEX idx_category_parent_sort ON cms_category (parent_id, sort);
+CREATE UNIQUE INDEX uk_category_parent_name ON cms_category (parent_id, active_name);
 
 CREATE TABLE cms_article (
     id BIGINT NOT NULL AUTO_INCREMENT,
