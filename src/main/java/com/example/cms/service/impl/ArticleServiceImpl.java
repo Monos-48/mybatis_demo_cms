@@ -1,6 +1,7 @@
 package com.example.cms.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.example.cms.common.ArticleStatus;
@@ -172,12 +173,26 @@ public class ArticleServiceImpl implements ArticleService {
             throw new BusinessException("驳回时必须填写审核意见");
         }
 
-        article.setStatus(Boolean.TRUE.equals(dto.getApproved())
-                ? ArticleStatus.APPROVED.getCode() : ArticleStatus.REJECTED.getCode());
-        article.setAuditBy(SecurityUtils.requireLoginUser().getId());
-        article.setAuditTime(LocalDateTime.now());
-        article.setAuditRemark(dto.getRemark());
-        updateWithOptimisticLock(article);
+        Integer newStatus = Boolean.TRUE.equals(dto.getApproved())
+                ? ArticleStatus.APPROVED.getCode() : ArticleStatus.REJECTED.getCode();
+        Long auditorId = SecurityUtils.requireLoginUser().getId();
+        LocalDateTime now = LocalDateTime.now();
+
+        // 使用 UpdateWrapper 显式写入 audit_remark：审核通过且未填写意见时会写入 NULL，
+        // 避免 updateById 的默认 NOT_NULL 策略跳过空值、把上一轮驳回意见残留下来。
+        int rows = articleMapper.update(null, new LambdaUpdateWrapper<CmsArticle>()
+                .eq(CmsArticle::getId, article.getId())
+                .eq(CmsArticle::getVersion, article.getVersion())
+                .set(CmsArticle::getStatus, newStatus)
+                .set(CmsArticle::getAuditBy, auditorId)
+                .set(CmsArticle::getAuditTime, now)
+                .set(CmsArticle::getAuditRemark, dto.getRemark())
+                .set(CmsArticle::getUpdateTime, now)
+                .set(CmsArticle::getUpdateBy, auditorId)
+                .setSql("version = version + 1"));
+        if (rows != 1) {
+            throw new BusinessException(409, "文章已被其他用户修改，请刷新后重试");
+        }
     }
 
     @Override

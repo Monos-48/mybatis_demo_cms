@@ -302,6 +302,38 @@ class ArticleWorkflowIntegrationTest extends BaseIntegrationTest {
         }
     }
 
+    @Test
+    void reApprovalClearsPreviousRejectionRemark() throws Exception {
+        MockHttpSession author = login("author", "author123");
+        MockHttpSession editor = login("editor", "editor123");
+
+        long id = createArticle(author, "驳回后重新审核文章", 4, true);
+
+        mockMvc.perform(post("/api/articles/{id}/audit", id)
+                        .session(editor)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"approved\":false,\"remark\":\"请补充数据来源\"}"))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(post("/api/articles/{id}/submit", id).session(author))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(post("/api/articles/{id}/audit", id)
+                        .session(editor)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"approved\":true}"))
+                .andExpect(status().isOk());
+
+        MvcResult result = mockMvc.perform(get("/api/articles/{id}", id).session(editor))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value(2))
+                .andReturn();
+        JsonNode remark = responseBody(result).path("data").path("auditRemark");
+        if (!remark.isMissingNode() && !remark.isNull() && !remark.asText().isEmpty()) {
+            throw new AssertionError("重新审核通过后仍残留上一轮驳回意见：" + remark.asText());
+        }
+    }
+
     private long createArticle(MockHttpSession session, String title, long categoryId,
                                boolean submitForReview) throws Exception {
         MvcResult result = mockMvc.perform(post("/api/articles")
