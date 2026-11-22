@@ -12,7 +12,10 @@
 | --- | --- |
 | 文章管理 | 新增、编辑、删除、分页列表、详情；草稿/待审核/通过/驳回/发布/下架完整状态机；批量发布、批量下架 |
 | 内容审核 | 编辑审核通过或驳回；驳回必须填写审核意见；记录审核人、审核时间、审核意见 |
-| 多级分类 | 递归分类树、父子级联、同级重名校验、移动防环、启停控制、删除引用保护 |
+| 已发布修订 | 已发布/已下架文章通过修订草稿编辑并重新审核；审核通过后替换线上正文，审核期间读者仍看到旧版本 |
+| 多级分类 | 递归分类树、父子级联、同级重名校验、移动防环、启停控制、删除引用保护；父分类停用即整棵子树不可用 |
+| 注册入口 | 登录页提供注册表单，注册后进入待审批状态，由管理员审批启用 |
+| 读者端 | 独立公开页面与 `/api/public/**` 匿名接口，只展示已发布且分类有效的文章，详情访问累加阅读量 |
 | 用户管理 | 用户分页检索、管理员创建、注册审批、启用/禁用、角色分配、重置密码、删除保护 |
 | RBAC 权限 | 用户-角色-权限多对多；`@RequirePermission` + AOP 接口级拦截；ADMIN/EDITOR/AUTHOR/VIEWER 四类内置角色 |
 | 高级检索 | 标题模糊、分类子树、状态、作者、起止日期、白名单排序、分页；JOIN 带出分类名/作者名，避免 N+1 |
@@ -61,6 +64,7 @@ mvn spring-boot:run
 启动后访问：
 
 - 管理端：<http://localhost:8080/>
+- 读者端：<http://localhost:8080/reader.html>
 - 健康检查：<http://localhost:8080/api/health>
 - H2 控制台：<http://localhost:8080/h2-console>
   - JDBC URL：`jdbc:h2:mem:cms`
@@ -129,7 +133,9 @@ MySQL 9.5 脚本包含完整表结构、外键、索引和演示数据；`applic
 | `viewer` | `viewer123` | 只读访客 | 文章与分类只读 |
 | `pending` | `pending123` | 内容作者 | 待审批账号，登录返回 403 |
 
-管理端登录页提供演示账号快捷填充。所有密码均以 BCrypt 密文存储，日志中的密码字段统一替换为 `******`。
+管理端登录页提供演示账号快捷填充与注册入口。所有密码均以 BCrypt 密文存储，日志中的密码字段统一替换为 `******`。
+
+> `viewer` 定位为**内部观察员**，可查看全部状态；普通读者请使用匿名读者端 `/reader.html`，公开接口只会返回已发布且分类有效的内容。
 
 ## 5. 权限点与内置角色
 
@@ -169,6 +175,23 @@ stateDiagram-v2
 
 > 已驳回文章修改并保存后仍保持“已驳回”，只有再次提交审核才进入“待审核”。
 
+### 6.1 已发布文章修订流程
+
+```mermaid
+stateDiagram-v2
+    [*] --> 修订草稿: 编辑已发布/已下架文章
+    修订草稿 --> 待审核修订: 提交审核
+    待审核修订 --> 审核通过: 通过并替换线上正文
+    待审核修订 --> 修订驳回: 驳回 + 审核意见
+    修订驳回 --> 修订草稿: 继续修订
+    修订草稿 --> [*]: 撤销修订
+```
+
+- 修订内容保存在 `cms_article_revision`，每篇文章最多一条修订记录；
+- 审核通过前，读者端始终看到主表中当前已发布的版本；
+- 审核通过后，修订正文整体覆盖主表内容，并重新计算发布时间；
+- 修订被驳回时，主表内容保持不变，作者可继续修改后重新提交。
+
 核心规则由 `ArticleServiceImpl` 集中校验：
 
 - 作者只能编辑、提交、删除**自己的草稿或已驳回文章**；
@@ -185,9 +208,9 @@ src/main/java/com/example/cms
 ├── aspect/              权限拦截切面、操作日志切面
 ├── common/              ResultVO、PageVO、状态枚举、会话用户
 ├── config/              MyBatis-Plus、Druid、Jackson、WebMvc、BCrypt
-├── controller/          RESTful Controller（8 个）
+├── controller/          RESTful Controller（9 个，含公开读者接口）
 ├── dto/                 请求对象 + JSR-303 校验
-├── entity/              6 张业务表 + 2 张关联表实体
+├── entity/              业务表 + 关联表 + 文章修订表实体
 ├── exception/           业务异常 + 全局异常处理
 ├── interceptor/         登录拦截器
 ├── mapper/              MyBatis-Plus Mapper + 自定义 XML 查询
@@ -199,7 +222,7 @@ src/main/resources
 ├── application*.yml      H2 / MySQL 环境配置
 ├── db/                  H2 建表与种子数据
 ├── mapper/              自定义 SQL XML
-└── static/              管理端 HTML/CSS/JS
+└── static/              管理端 index.html 与读者端 reader.html / CSS / JS
 
 sql/                     MySQL 9.5 建库/初始化脚本
 docs/                    API、架构、数据库、测试、报告提纲与 AI 使用声明
@@ -255,7 +278,7 @@ docs/                    API、架构、数据库、测试、报告提纲与 AI 
 mvn test
 ```
 
-测试使用 H2 + MockMvc，覆盖 22 个场景：登录/注册、401/403 权限拦截、文章状态机、驳回意见、乐观锁、SQL 注入载荷、批量操作、分类树/防环/删除保护、用户与角色管理、日志脱敏与筛选。详见 [docs/TESTING.md](docs/TESTING.md)。
+测试使用 H2 + MockMvc，覆盖 33 个场景：登录/注册、401/403 权限拦截、文章状态机、驳回意见、乐观锁、SQL 注入载荷、批量操作、分类树/防环/删除保护、用户与角色管理、日志脱敏与筛选，以及公开读者接口、阅读量累加、分类子树停用、修订草稿审核替换、并发删除等新增场景。详见 [docs/TESTING.md](docs/TESTING.md)。
 
 浏览器端已通过 Playwright 冒烟验收：登录 → 新建草稿 → 提交审核 → 编辑审核 → 发布 → 详情 → 分类树 → 用户/角色/日志页面，且校验编辑角色看不到用户管理入口。同一套流程已在本机 MySQL 9.5.0（3306）服务上复验通过。
 
@@ -294,6 +317,14 @@ mvn test
 | GET/POST/PUT/DELETE | `/api/users/**` | `user:manage` |
 | GET/POST/PUT/DELETE | `/api/roles/**` | `role:manage` |
 | GET | `/api/logs` | `log:view` |
+| GET | `/api/articles/{id}/revision` | `article:list` |
+| PUT | `/api/articles/{id}/revision` | `article:edit` |
+| DELETE | `/api/articles/{id}/revision` | `article:edit` |
+| POST | `/api/articles/{id}/revision/submit` | `article:submit` |
+| POST | `/api/articles/{id}/revision/audit` | `article:audit` |
+| GET | `/api/public/articles` | 公开（仅已发布） |
+| GET | `/api/public/articles/{id}` | 公开（仅已发布，累加阅读量） |
+| GET | `/api/public/categories/tree` | 公开（仅有效启用分类） |
 
 完整参数与示例见 [docs/API.md](docs/API.md)。
 

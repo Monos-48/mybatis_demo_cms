@@ -60,13 +60,39 @@
                 <p id="login-error" class="form-error" role="alert" hidden></p>
                 <button class="btn btn-primary btn-block" type="submit" id="login-button">登 录</button>
             </form>
-            <div class="demo-accounts">
+            <div class="demo-accounts" id="demo-accounts">
                 <div class="demo-title">演示账号（点击填充）</div>
                 <button type="button" data-user="admin" data-pass="admin123"><b>admin</b><span>超级管理员</span></button>
                 <button type="button" data-user="editor" data-pass="editor123"><b>editor</b><span>内容编辑</span></button>
                 <button type="button" data-user="author" data-pass="author123"><b>author</b><span>内容作者</span></button>
                 <button type="button" data-user="viewer" data-pass="viewer123"><b>viewer</b><span>只读访客</span></button>
             </div>
+            <div class="login-switch" id="login-switch">
+                <span class="small muted">还没有账号？</span>
+                <button type="button" class="btn-link" id="show-register">注册账号</button>
+                <span class="muted small">·</span>
+                <a class="btn-link" href="reader.html">进入读者端</a>
+            </div>
+            <form id="register-form" class="register-form" novalidate hidden>
+                <div class="login-title">注册读者账号</div>
+                <p class="login-subtitle">注册后需管理员审批，通过后即可登录管理后台。</p>
+                <label class="field"><span>用户名</span>
+                    <input id="reg-username" maxlength="32" autocomplete="username"
+                           placeholder="4-32 位字母、数字或下划线" required></label>
+                <label class="field"><span>昵称</span>
+                    <input id="reg-nickname" maxlength="20" placeholder="2-20 个字符" required></label>
+                <label class="field"><span>邮箱</span>
+                    <input id="reg-email" type="email" maxlength="100" placeholder="选填，用于联系"></label>
+                <label class="field"><span>密码</span>
+                    <input id="reg-password" type="password" maxlength="32"
+                           autocomplete="new-password" placeholder="8-32 位，同时包含字母和数字" required></label>
+                <p id="register-error" class="form-error" role="alert" hidden></p>
+                <button class="btn btn-primary btn-block" type="submit" id="register-button">注 册</button>
+                <div class="login-switch">
+                    <span class="small muted">已有账号？</span>
+                    <button type="button" class="btn-link" id="show-login">返回登录</button>
+                </div>
+            </form>
         </div>
     </div>
 </div>
@@ -84,6 +110,7 @@
                 <span id="service-dot" class="dot"></span>
                 <span id="service-status">正在检测服务…</span>
             </div>
+            <a class="sidebar-reader" href="reader.html" target="_blank" rel="noopener">读者端 ↗</a>
             <small class="sidebar-version">v1.0.0 · Spring Boot 2.7</small>
         </div>
     </aside>

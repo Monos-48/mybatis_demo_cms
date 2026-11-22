@@ -629,6 +629,37 @@ table.data-table { width: 100%; border-collapse: collapse; }
     .toast { max-width: none; }
 }
 
+.login-switch {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    margin-top: 14px;
+    font-size: 13px;
+}
+
+.register-form {
+    margin-top: 4px;
+}
+
+.register-form .login-title {
+    margin-bottom: 4px;
+}
+
+.sidebar-reader {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 8px;
+    color: #93c5fd;
+    font-size: 12px;
+    text-decoration: none;
+}
+
+.sidebar-reader:hover {
+    color: #bfdbfe;
+}
+
 @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }

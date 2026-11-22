@@ -5,26 +5,32 @@ import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.example.cms.common.ArticleStatus;
-import com.example.cms.common.EnableStatus;
 import com.example.cms.common.LoginUser;
 import com.example.cms.common.PageVO;
+import com.example.cms.common.RevisionStatus;
 import com.example.cms.dto.ArticleAuditDTO;
 import com.example.cms.dto.ArticleCreateDTO;
 import com.example.cms.dto.ArticleQueryDTO;
 import com.example.cms.dto.ArticleUpdateDTO;
 import com.example.cms.entity.CmsArticle;
+import com.example.cms.entity.CmsArticleRevision;
 import com.example.cms.entity.CmsCategory;
 import com.example.cms.exception.BusinessException;
 import com.example.cms.exception.NotFoundException;
 import com.example.cms.exception.PermissionDeniedException;
 import com.example.cms.mapper.CmsArticleMapper;
+import com.example.cms.mapper.CmsArticleRevisionMapper;
 import com.example.cms.mapper.CmsCategoryMapper;
 import com.example.cms.service.ArticleService;
+import com.example.cms.service.CategoryService;
 import com.example.cms.service.OperationLogService;
 import com.example.cms.util.PageUtils;
 import com.example.cms.util.SecurityUtils;
 import com.example.cms.vo.ArticleDetailVO;
+import com.example.cms.vo.ArticleRevisionVO;
 import com.example.cms.vo.ArticleVO;
+import com.example.cms.vo.PublicArticleDetailVO;
+import com.example.cms.vo.PublicArticleVO;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -46,12 +52,18 @@ public class ArticleServiceImpl implements ArticleService {
 
     private final CmsArticleMapper articleMapper;
     private final CmsCategoryMapper categoryMapper;
+    private final CmsArticleRevisionMapper revisionMapper;
+    private final CategoryService categoryService;
     private final OperationLogService operationLogService;
 
     public ArticleServiceImpl(CmsArticleMapper articleMapper, CmsCategoryMapper categoryMapper,
+                              CmsArticleRevisionMapper revisionMapper,
+                              CategoryService categoryService,
                               OperationLogService operationLogService) {
         this.articleMapper = articleMapper;
         this.categoryMapper = categoryMapper;
+        this.revisionMapper = revisionMapper;
+        this.categoryService = categoryService;
         this.operationLogService = operationLogService;
     }
 
@@ -62,6 +74,7 @@ public class ArticleServiceImpl implements ArticleService {
         IPage<ArticleVO> result = articleMapper.selectArticlePage(page, query, categoryIds);
         for (ArticleVO article : result.getRecords()) {
             article.setStatusText(ArticleStatus.descriptionOf(article.getStatus()));
+            article.setRevisionStatusText(RevisionStatus.descriptionOf(article.getRevisionStatus()));
         }
         return PageVO.of(result);
     }
@@ -255,6 +268,205 @@ public class ArticleServiceImpl implements ArticleService {
         }
     }
 
+    @Override
+    public PageVO<PublicArticleVO> publicPage(ArticleQueryDTO query) {
+        List<Long> effective = new ArrayList<>(categoryService.effectiveEnabledCategoryIds());
+        List<Long> requested = resolveCategoryIds(query);
+        List<Long> categoryIds;
+        if (requested.isEmpty()) {
+            categoryIds = effective;
+        } else {
+            requested.retainAll(new HashSet<>(effective));
+            categoryIds = requested;
+        }
+        Page<PublicArticleVO> page = PageUtils.toPage(query);
+        if (categoryIds.isEmpty()) {
+            page.setRecords(Collections.emptyList());
+            page.setTotal(0);
+            return PageVO.of(page);
+        }
+        IPage<PublicArticleVO> result = articleMapper.selectPublicArticlePage(page, query, categoryIds);
+        return PageVO.of(result);
+    }
+
+    @Override
+    public PublicArticleDetailVO publicDetail(Long id) {
+        List<Long> effective = new ArrayList<>(categoryService.effectiveEnabledCategoryIds());
+        if (effective.isEmpty()) {
+            throw new NotFoundException("文章不存在");
+        }
+        PublicArticleDetailVO detail = articleMapper.selectPublicDetailById(id, effective);
+        if (detail == null) {
+            throw new NotFoundException("文章不存在");
+        }
+        // 只有公开详情访问才累加阅读量；管理端详情不计入
+        articleMapper.incrementViewCount(id);
+        detail.setViewCount((detail.getViewCount() == null ? 0 : detail.getViewCount()) + 1);
+        return detail;
+    }
+
+    @Override
+    public ArticleRevisionVO getRevision(Long articleId) {
+        CmsArticle article = requireArticle(articleId);
+        checkOwnerOrManager(article);
+        CmsArticleRevision revision = findRevision(articleId);
+        return revision == null ? null : toRevisionVO(revision);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void saveRevision(Long articleId, ArticleUpdateDTO dto) {
+        CmsArticle article = requireArticle(articleId);
+        checkOwnerOrManager(article);
+        if (!isStatus(article, ArticleStatus.PUBLISHED)
+                && !isStatus(article, ArticleStatus.OFFLINE)) {
+            throw new BusinessException(409, "只有已发布或已下架文章可以创建修订");
+        }
+        requireEnabledCategory(dto.getCategoryId());
+
+        CmsArticleRevision revision = findRevision(articleId);
+        if (revision != null && isRevisionStatus(revision, RevisionStatus.PENDING)) {
+            throw new BusinessException(409, "修订正在审核中，不能修改");
+        }
+
+        Integer newStatus = Boolean.TRUE.equals(dto.getSubmitForReview())
+                ? RevisionStatus.PENDING.getCode() : RevisionStatus.DRAFT.getCode();
+        if (revision == null) {
+            revision = new CmsArticleRevision();
+            revision.setArticleId(articleId);
+            revision.setTitle(dto.getTitle().trim());
+            revision.setSummary(dto.getSummary());
+            revision.setContent(dto.getContent());
+            revision.setCategoryId(dto.getCategoryId());
+            revision.setStatus(newStatus);
+            revision.setVersion(0);
+            revisionMapper.insert(revision);
+            return;
+        }
+
+        int rows = revisionMapper.update(null, new LambdaUpdateWrapper<CmsArticleRevision>()
+                .eq(CmsArticleRevision::getId, revision.getId())
+                .eq(CmsArticleRevision::getVersion, dto.getVersion())
+                .set(CmsArticleRevision::getTitle, dto.getTitle().trim())
+                .set(CmsArticleRevision::getSummary, dto.getSummary())
+                .set(CmsArticleRevision::getContent, dto.getContent())
+                .set(CmsArticleRevision::getCategoryId, dto.getCategoryId())
+                .set(CmsArticleRevision::getStatus, newStatus)
+                .set(CmsArticleRevision::getAuditBy, null)
+                .set(CmsArticleRevision::getAuditTime, null)
+                .set(CmsArticleRevision::getAuditRemark, null)
+                .set(CmsArticleRevision::getUpdateTime, LocalDateTime.now())
+                .set(CmsArticleRevision::getUpdateBy, SecurityUtils.getCurrentUserId())
+                .setSql("version = version + 1"));
+        if (rows != 1) {
+            throw new BusinessException(409, "修订已被其他用户修改，请刷新后重试");
+        }
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void submitRevision(Long articleId) {
+        CmsArticle article = requireArticle(articleId);
+        checkOwnerOrManager(article);
+        CmsArticleRevision revision = requireRevision(articleId);
+        if (!isRevisionStatus(revision, RevisionStatus.DRAFT)
+                && !isRevisionStatus(revision, RevisionStatus.REJECTED)) {
+            throw new BusinessException(409, "只有修订草稿或已驳回修订可以提交审核");
+        }
+        if (!categoryService.isEffectivelyEnabled(revision.getCategoryId())) {
+            throw new BusinessException(409, "修订分类已停用，请调整分类后再提交");
+        }
+
+        int rows = revisionMapper.update(null, new LambdaUpdateWrapper<CmsArticleRevision>()
+                .eq(CmsArticleRevision::getId, revision.getId())
+                .eq(CmsArticleRevision::getVersion, revision.getVersion())
+                .set(CmsArticleRevision::getStatus, RevisionStatus.PENDING.getCode())
+                .set(CmsArticleRevision::getAuditBy, null)
+                .set(CmsArticleRevision::getAuditTime, null)
+                .set(CmsArticleRevision::getAuditRemark, null)
+                .set(CmsArticleRevision::getUpdateTime, LocalDateTime.now())
+                .set(CmsArticleRevision::getUpdateBy, SecurityUtils.getCurrentUserId())
+                .setSql("version = version + 1"));
+        if (rows != 1) {
+            throw new BusinessException(409, "修订已被其他用户修改，请刷新后重试");
+        }
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void discardRevision(Long articleId) {
+        CmsArticle article = requireArticle(articleId);
+        checkOwnerOrManager(article);
+        CmsArticleRevision revision = requireRevision(articleId);
+        if (isRevisionStatus(revision, RevisionStatus.PENDING)) {
+            throw new BusinessException(409, "修订正在审核中，不能撤销");
+        }
+        revisionMapper.deleteById(revision.getId());
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void auditRevision(Long articleId, ArticleAuditDTO dto) {
+        CmsArticle article = requireArticle(articleId);
+        CmsArticleRevision revision = requireRevision(articleId);
+        if (!isRevisionStatus(revision, RevisionStatus.PENDING)) {
+            throw new BusinessException(409, "只有待审核修订可以执行审核");
+        }
+        if (Boolean.FALSE.equals(dto.getApproved())
+                && (dto.getRemark() == null || dto.getRemark().trim().isEmpty())) {
+            throw new BusinessException("驳回时必须填写审核意见");
+        }
+
+        Long auditorId = SecurityUtils.requireLoginUser().getId();
+        LocalDateTime now = LocalDateTime.now();
+        boolean approved = Boolean.TRUE.equals(dto.getApproved());
+
+        if (approved) {
+            if (!isStatus(article, ArticleStatus.PUBLISHED)
+                    && !isStatus(article, ArticleStatus.OFFLINE)) {
+                throw new BusinessException(409, "文章当前状态不能应用修订");
+            }
+            if (!categoryService.isEffectivelyEnabled(revision.getCategoryId())) {
+                throw new BusinessException(409, "修订分类已停用，无法发布，请先调整分类");
+            }
+            // 修订通过后整体替换线上正文，并重新发布
+            int articleRows = articleMapper.update(null, new LambdaUpdateWrapper<CmsArticle>()
+                    .eq(CmsArticle::getId, article.getId())
+                    .eq(CmsArticle::getVersion, article.getVersion())
+                    .set(CmsArticle::getTitle, revision.getTitle())
+                    .set(CmsArticle::getSummary, revision.getSummary())
+                    .set(CmsArticle::getContent, revision.getContent())
+                    .set(CmsArticle::getCategoryId, revision.getCategoryId())
+                    .set(CmsArticle::getStatus, ArticleStatus.PUBLISHED.getCode())
+                    .set(CmsArticle::getPublishTime, now)
+                    .set(CmsArticle::getAuditBy, auditorId)
+                    .set(CmsArticle::getAuditTime, now)
+                    .set(CmsArticle::getAuditRemark, dto.getRemark())
+                    .set(CmsArticle::getUpdateTime, now)
+                    .set(CmsArticle::getUpdateBy, auditorId)
+                    .setSql("version = version + 1"));
+            if (articleRows != 1) {
+                throw new BusinessException(409, "文章已被其他用户修改，请刷新后重试");
+            }
+        }
+
+        Integer revisionStatus = approved
+                ? RevisionStatus.APPROVED.getCode() : RevisionStatus.REJECTED.getCode();
+        int revisionRows = revisionMapper.update(null, new LambdaUpdateWrapper<CmsArticleRevision>()
+                .eq(CmsArticleRevision::getId, revision.getId())
+                .eq(CmsArticleRevision::getVersion, revision.getVersion())
+                .set(CmsArticleRevision::getStatus, revisionStatus)
+                .set(CmsArticleRevision::getAuditBy, auditorId)
+                .set(CmsArticleRevision::getAuditTime, now)
+                .set(CmsArticleRevision::getAuditRemark, dto.getRemark())
+                .set(CmsArticleRevision::getUpdateTime, now)
+                .set(CmsArticleRevision::getUpdateBy, auditorId)
+                .setSql("version = version + 1"));
+        if (revisionRows != 1) {
+            throw new BusinessException(409, "修订已被其他用户修改，请刷新后重试");
+        }
+    }
+
     /**
      * 计算分类过滤集合。includeChildren=true 时一次查询全部分类后在内存展开子树。
      */
@@ -294,14 +506,45 @@ public class ArticleServiceImpl implements ArticleService {
     }
 
     private void requireEnabledCategory(Long categoryId) {
-        CmsCategory category = categoryMapper.selectById(categoryId);
-        if (category == null) {
-            throw new BusinessException("分类不存在");
+        if (!categoryService.isEffectivelyEnabled(categoryId)) {
+            throw new BusinessException("分类不存在或已停用（含父分类停用），不能挂载新文章");
         }
-        if (category.getStatus() == null
-                || category.getStatus() != EnableStatus.ENABLED.getCode()) {
-            throw new BusinessException("分类已停用，不能挂载新文章");
+    }
+
+    private CmsArticleRevision findRevision(Long articleId) {
+        return revisionMapper.selectOne(new LambdaQueryWrapper<CmsArticleRevision>()
+                .eq(CmsArticleRevision::getArticleId, articleId));
+    }
+
+    private CmsArticleRevision requireRevision(Long articleId) {
+        CmsArticleRevision revision = findRevision(articleId);
+        if (revision == null) {
+            throw new NotFoundException("该文章没有修订草稿");
         }
+        return revision;
+    }
+
+    private boolean isRevisionStatus(CmsArticleRevision revision, RevisionStatus status) {
+        return revision.getStatus() != null && revision.getStatus() == status.getCode();
+    }
+
+    private ArticleRevisionVO toRevisionVO(CmsArticleRevision revision) {
+        ArticleRevisionVO vo = new ArticleRevisionVO();
+        vo.setId(revision.getId());
+        vo.setArticleId(revision.getArticleId());
+        vo.setTitle(revision.getTitle());
+        vo.setSummary(revision.getSummary());
+        vo.setContent(revision.getContent());
+        vo.setCategoryId(revision.getCategoryId());
+        vo.setStatus(revision.getStatus());
+        vo.setStatusText(RevisionStatus.descriptionOf(revision.getStatus()));
+        vo.setAuditRemark(revision.getAuditRemark());
+        vo.setAuditTime(revision.getAuditTime());
+        vo.setVersion(revision.getVersion());
+        vo.setUpdateTime(revision.getUpdateTime());
+        CmsCategory category = categoryMapper.selectById(revision.getCategoryId());
+        vo.setCategoryName(category == null ? null : category.getName());
+        return vo;
     }
 
     private CmsArticle requireArticle(Long id) {

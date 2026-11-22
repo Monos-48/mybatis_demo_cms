@@ -7,6 +7,8 @@ import com.example.cms.dto.ArticleQueryDTO;
 import com.example.cms.entity.CmsArticle;
 import com.example.cms.vo.ArticleDetailVO;
 import com.example.cms.vo.ArticleVO;
+import com.example.cms.vo.PublicArticleDetailVO;
+import com.example.cms.vo.PublicArticleVO;
 import org.apache.ibatis.annotations.Param;
 
 import java.util.List;
@@ -21,4 +23,13 @@ public interface CmsArticleMapper extends BaseMapper<CmsArticle> {
                                        @Param("categoryIds") List<Long> categoryIds);
 
     ArticleDetailVO selectDetailById(@Param("id") Long id);
+
+    IPage<PublicArticleVO> selectPublicArticlePage(Page<PublicArticleVO> page,
+                                                   @Param("q") ArticleQueryDTO query,
+                                                   @Param("categoryIds") List<Long> categoryIds);
+
+    PublicArticleDetailVO selectPublicDetailById(@Param("id") Long id,
+                                                 @Param("categoryIds") List<Long> categoryIds);
+
+    int incrementViewCount(@Param("id") Long id);
 }

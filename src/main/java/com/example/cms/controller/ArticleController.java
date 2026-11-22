@@ -11,6 +11,7 @@ import com.example.cms.dto.ArticleUpdateDTO;
 import com.example.cms.dto.BatchArticleDTO;
 import com.example.cms.service.ArticleService;
 import com.example.cms.vo.ArticleDetailVO;
+import com.example.cms.vo.ArticleRevisionVO;
 import com.example.cms.vo.ArticleVO;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -119,5 +120,45 @@ public class ArticleController {
     public ResultVO<Void> batchOffline(@Valid @RequestBody BatchArticleDTO dto) {
         articleService.batchOffline(dto.getArticleIds());
         return ResultVO.success("批量下架成功", null);
+    }
+
+    @GetMapping("/{id}/revision")
+    @RequirePermission("article:list")
+    public ResultVO<ArticleRevisionVO> revision(@PathVariable Long id) {
+        return ResultVO.success(articleService.getRevision(id));
+    }
+
+    @PutMapping("/{id}/revision")
+    @RequirePermission("article:edit")
+    @Log(module = "文章管理", operation = "保存修订")
+    public ResultVO<Void> saveRevision(@PathVariable Long id,
+                                       @Valid @RequestBody ArticleUpdateDTO dto) {
+        articleService.saveRevision(id, dto);
+        return ResultVO.success("修订已保存", null);
+    }
+
+    @DeleteMapping("/{id}/revision")
+    @RequirePermission("article:edit")
+    @Log(module = "文章管理", operation = "撤销修订")
+    public ResultVO<Void> discardRevision(@PathVariable Long id) {
+        articleService.discardRevision(id);
+        return ResultVO.success("修订已撤销", null);
+    }
+
+    @PostMapping("/{id}/revision/submit")
+    @RequirePermission("article:submit")
+    @Log(module = "文章管理", operation = "提交修订审核")
+    public ResultVO<Void> submitRevision(@PathVariable Long id) {
+        articleService.submitRevision(id);
+        return ResultVO.success("修订已提交审核", null);
+    }
+
+    @PostMapping("/{id}/revision/audit")
+    @RequirePermission("article:audit")
+    @Log(module = "文章管理", operation = "审核修订")
+    public ResultVO<Void> auditRevision(@PathVariable Long id,
+                                        @Valid @RequestBody ArticleAuditDTO dto) {
+        articleService.auditRevision(id, dto);
+        return ResultVO.success("修订审核完成", null);
     }
 }

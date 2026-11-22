@@ -21,6 +21,7 @@
 
     const STATUS_TEXT = {0: '草稿', 1: '待审核', 2: '审核通过', 3: '已驳回', 4: '已发布', 5: '已下架'};
     const STATUS_CLASS = {0: 'draft', 1: 'pending', 2: 'approved', 3: 'rejected', 4: 'published', 5: 'offline'};
+    const REVISION_TEXT = {0: '修订草稿', 1: '修订待审', 2: '修订通过', 3: '修订驳回'};
     const USER_STATUS = {0: '禁用', 1: '正常', 2: '待审批'};
     const PERM_GROUP = {article: '文章内容', category: '内容分类', user: '用户管理', role: '角色权限', log: '操作日志'};
     const PAGE_META = {
@@ -237,6 +238,7 @@
     function showLogin(clearPassword = true) {
         if (clearPassword) $('#login-password').value = '';
         resetUserState();
+        showRegisterPane(false);
         $('#login-error').hidden = true;
         $('#app').classList.add('hidden');
         $('#login-screen').classList.remove('hidden');
@@ -713,21 +715,29 @@
                 body.innerHTML = state.articleRows.map((article) => {
                     const owner = article.authorId === state.me.id;
                     const editableStatus = article.status === 0 || article.status === 3;
+                    const publishedLike = article.status === 4 || article.status === 5;
                     const canWrite = has('article:edit') && (isManager() || owner) && editableStatus;
                     const canSubmit = has('article:submit') && (isManager() || owner) && editableStatus;
+                    const canRevision = has('article:edit') && (isManager() || owner)
+                        && publishedLike && article.revisionStatus !== 1;
                     const canDelete = has('article:delete') && (isManager() || owner) && (isManager() || editableStatus);
                     const actions = [`<button class="btn-link" data-action="detail" data-id="${article.id}">详情</button>`];
                     if (canWrite) actions.push(`<button class="btn-link" data-action="edit" data-id="${article.id}">编辑</button>`);
                     if (canSubmit) actions.push(`<button class="btn-link" data-action="submit" data-id="${article.id}">提交审核</button>`);
+                    if (canRevision) actions.push(`<button class="btn-link" data-action="edit-revision" data-id="${article.id}">${article.revisionStatus === 3 ? '继续修订' : '修订'}</button>`);
                     if (article.status === 1 && has('article:audit')) actions.push(`<button class="btn-link" data-action="audit" data-id="${article.id}">审核</button>`);
-                    if ((article.status === 2 || article.status === 5) && has('article:publish')) actions.push(`<button class="btn-link" data-action="publish" data-id="${article.id}">发布</button>`);
+                    if (article.revisionStatus === 1 && has('article:audit')) actions.push(`<button class="btn-link" data-action="audit-revision" data-id="${article.id}">审核修订</button>`);
+                    if ((article.status === 2 || article.status === 5) && has('article:publish') && article.revisionStatus !== 1) actions.push(`<button class="btn-link" data-action="publish" data-id="${article.id}">发布</button>`);
                     if (article.status === 4 && has('article:offline')) actions.push(`<button class="btn-link" data-action="offline" data-id="${article.id}">下架</button>`);
                     if (canDelete) actions.push(`<button class="btn-link danger" data-action="delete" data-id="${article.id}">删除</button>`);
+                    const revisionTag = article.revisionStatus != null
+                        ? `<span class="tag" style="margin-left:6px">${REVISION_TEXT[article.revisionStatus] || '修订'}</span>`
+                        : '';
                     return `<tr>
                         <td><input class="row-check" type="checkbox" value="${article.id}"></td>
                         <td class="title-cell"><span class="title-main" title="${esc(article.title)}">${esc(article.title)}</span><span class="title-sub">v${article.version} · 阅读 ${article.viewCount || 0}</span></td>
                         <td><div>${esc(article.categoryName || '—')}</div><div class="small muted">${esc(article.authorName || '—')}</div></td>
-                        <td>${articleBadge(article.status)}${article.auditRemark ? `<div class="small muted" style="max-width:160px;white-space:normal">${esc(article.auditRemark)}</div>` : ''}</td>
+                        <td>${articleBadge(article.status)}${revisionTag}${article.auditRemark ? `<div class="small muted" style="max-width:160px;white-space:normal">${esc(article.auditRemark)}</div>` : ''}</td>
                         <td class="cell-time">${fmt(article.publishTime)}</td>
                         <td class="cell-time">${fmt(article.updateTime)}</td>
                         <td><div class="action-group">${actions.join('')}</div></td>
@@ -754,7 +764,9 @@
         try {
             if (action === 'detail') return openArticleDetail(id);
             if (action === 'edit') return openArticleForm(id);
+            if (action === 'edit-revision') return openArticleForm(id, {revision: true});
             if (action === 'audit') return openAuditModal(id);
+            if (action === 'audit-revision') return openAuditModal(id, {revision: true});
             if (action === 'delete') {
                 if (!(await confirmDialog({title: '删除文章', message: '删除后不可在列表中恢复，确定继续吗？', confirmText: '删除', danger: true}))) return;
                 await api(`/api/articles/${id}`, {method: 'DELETE'});
@@ -804,6 +816,22 @@
             const owner = article.authorId === state.me.id;
             const editable = (article.status === 0 || article.status === 3)
                 && has('article:edit') && (isManager() || owner);
+            let revision = null;
+            if (article.status === 4 || article.status === 5) {
+                try {
+                    revision = await api(`/api/articles/${id}/revision`);
+                } catch (error) {
+                    revision = null;
+                }
+            }
+            const revisionEditable = (article.status === 4 || article.status === 5)
+                && has('article:edit') && (isManager() || owner)
+                && (!revision || revision.status !== 1);
+            const revisionAuditable = revision && revision.status === 1 && has('article:audit');
+            const revisionMeta = revision ? `
+                <div><dt>修订状态</dt><dd>${REVISION_TEXT[revision.status] || '修订'}</dd></div>
+                <div><dt>修订更新时间</dt><dd>${fmt(revision.updateTime)}</dd></div>
+                ${revision.auditRemark ? `<div><dt>修订审核意见</dt><dd>${esc(revision.auditRemark)}</dd></div>` : ''}` : '';
             openModal({
                 title: article.title,
                 subtitle: `${article.categoryName || '未分类'} · ${article.authorName || '未知作者'}`,
@@ -816,47 +844,83 @@
                         <div><dt>版本 / 阅读</dt><dd>v${article.version} · ${article.viewCount || 0}</dd></div>
                         <div><dt>审核人</dt><dd>${esc(article.auditorName || '—')}</dd></div>
                         <div><dt>审核意见</dt><dd>${esc(article.auditRemark || '—')}</dd></div>
+                        ${revisionMeta}
                     </dl>
                     ${article.summary ? `<p class="muted" style="line-height:1.7">${esc(article.summary)}</p>` : ''}
-                    <div class="detail-content">${esc(article.content)}</div>`,
+                    <div class="detail-content">${esc(article.content)}</div>
+                    ${revision ? `<h4 style="margin:18px 0 8px;font-size:13px">${revision.status === 1 ? '待审核修订内容' : '最近修订内容'}</h4>
+                        <div class="detail-content" style="max-height:200px;overflow:auto;background:#f8fafc;padding:14px;border-radius:10px">${esc(revision.content)}</div>` : ''}`,
                 footer: `<button class="btn" data-close>关闭</button>
-                    ${editable ? '<button class="btn btn-primary" data-edit-article>编辑文章</button>' : ''}`
+                    ${editable ? '<button class="btn" data-edit-article>编辑文章</button>' : ''}
+                    ${revisionEditable ? `<button class="btn ${editable ? '' : 'btn-primary'}" data-edit-revision>${revision && revision.status === 3 ? '继续修订' : '编辑修订'}</button>` : ''}
+                    ${revisionAuditable ? '<button class="btn btn-primary" data-audit-revision>审核修订</button>' : ''}`
             });
             $('[data-close]').addEventListener('click', () => closeModal());
             $('[data-edit-article]')?.addEventListener('click', () => {
                 closeModal(true);
                 openArticleForm(article.id);
             });
+            $('[data-edit-revision]')?.addEventListener('click', () => {
+                closeModal(true);
+                openArticleForm(article.id, {revision: true});
+            });
+            $('[data-audit-revision]')?.addEventListener('click', () => {
+                closeModal(true);
+                openAuditModal(article.id, {revision: true});
+            });
         } catch (error) {
             toast(error.message, 'error');
         }
     }
 
-    async function openArticleForm(id) {
+    async function openArticleForm(id, formOptions = {}) {
         try {
+            const revisionMode = Boolean(formOptions.revision);
             const tree = await api('/api/categories/tree?enabledOnly=true');
             const article = id ? await api(`/api/articles/${id}`) : null;
-            if (article && article.status !== 0 && article.status !== 3) {
+            if (revisionMode) {
+                if (!article || (article.status !== 4 && article.status !== 5)) {
+                    toast('只有已发布或已下架文章可以创建修订', 'error');
+                    return;
+                }
+            } else if (article && article.status !== 0 && article.status !== 3) {
                 toast('只有草稿或已驳回文章可编辑', 'error');
                 return;
             }
-            const options = categoryOptions(tree, article ? article.categoryId : '');
+
+            let revision = null;
+            if (revisionMode) {
+                revision = await api(`/api/articles/${id}/revision`);
+                if (revision && revision.status === 1) {
+                    toast('修订正在审核中，不能修改', 'error');
+                    return;
+                }
+            }
+            const source = revision || article;
+            const options = categoryOptions(tree, source ? source.categoryId : '');
             if (!options) {
                 toast('暂无启用的分类，请先创建分类', 'error');
                 return;
             }
             const initial = {
-                title: article ? article.title : '',
-                categoryId: article ? String(article.categoryId) : '',
-                summary: article ? (article.summary || '') : '',
-                content: article ? article.content : ''
+                title: source ? source.title : '',
+                categoryId: source ? String(source.categoryId) : '',
+                summary: source ? (source.summary || '') : '',
+                content: source ? source.content : ''
             };
+            const titleText = revisionMode
+                ? (revision ? '编辑修订' : '创建修订')
+                : (article ? '编辑文章' : '新建文章');
+            const subtitle = revisionMode
+                ? `线上版本：${STATUS_TEXT[article.status]}${revision ? ` · 修订状态：${REVISION_TEXT[revision.status]}` : ' · 保存后不影响线上内容'}`
+                : (article ? `当前状态：${STATUS_TEXT[article.status]} · 保存使用乐观锁校验版本` : '保存为草稿，或直接提交审核');
             openModal({
-                title: article ? '编辑文章' : '新建文章',
-                subtitle: article ? `当前状态：${STATUS_TEXT[article.status]} · 保存使用乐观锁校验版本` : '保存为草稿，或直接提交审核',
+                title: titleText,
+                subtitle,
                 size: 'modal-lg',
                 body: `
                     <form id="article-form" class="form-grid" autocomplete="off">
+                        ${revisionMode ? '<p class="muted small span-2">修订审核通过前，读者仍看到当前线上版本。</p>' : ''}
                         <label class="field span-2"><span>标题 *<small class="char-count" id="af-title-count">0 / 100</small></span>
                             <input id="af-title" maxlength="100" value="${esc(initial.title)}" placeholder="2-100 个字符"></label>
                         <label class="field"><span>分类 *</span><select id="af-category"><option value="">请选择分类</option>${options}</select></label>
@@ -867,8 +931,8 @@
                     </form>`,
                 footer: `
                     <button class="btn" data-close>取消</button>
-                    <button class="btn" id="save-draft">保存草稿</button>
-                    <button class="btn btn-primary" id="save-submit">保存并提交审核</button>`
+                    <button class="btn" id="save-draft">${revisionMode ? '保存修订草稿' : '保存草稿'}</button>
+                    <button class="btn btn-primary" id="save-submit">${revisionMode ? '保存并提交修订审核' : '保存并提交审核'}</button>`
             });
             const updateCounts = () => {
                 $('#af-title-count').textContent = `${$('#af-title').value.length} / 100`;
@@ -902,14 +966,19 @@
                 const buttons = [$('#save-draft'), $('#save-submit')];
                 buttons.forEach((item) => setBusy(item, true));
                 try {
-                    if (article) {
+                    if (revisionMode) {
+                        payload.version = revision ? revision.version : 0;
+                        await api(`/api/articles/${article.id}/revision`, {method: 'PUT', body: payload});
+                        toast(submitForReview ? '修订已提交审核' : '修订草稿已保存', 'success');
+                    } else if (article) {
                         payload.version = article.version;
                         await api(`/api/articles/${article.id}`, {method: 'PUT', body: payload});
+                        toast(submitForReview ? '已保存并提交审核' : '已保存草稿', 'success');
                     } else {
                         await api('/api/articles', {method: 'POST', body: payload});
+                        toast(submitForReview ? '已保存并提交审核' : '已保存草稿', 'success');
                     }
                     closeModal(true);
-                    toast(submitForReview ? '已保存并提交审核' : '已保存草稿', 'success');
                     await loadArticles();
                 } catch (error) {
                     toast(error.message, 'error');
@@ -924,24 +993,34 @@
         }
     }
 
-    async function openAuditModal(id) {
+    async function openAuditModal(id, formOptions = {}) {
         try {
+            const revisionMode = Boolean(formOptions.revision);
             const article = await api(`/api/articles/${id}`);
+            let revision = null;
+            if (revisionMode) {
+                revision = await api(`/api/articles/${id}/revision`);
+                if (!revision || revision.status !== 1) {
+                    toast('没有待审核修订', 'error');
+                    return;
+                }
+            }
+            const source = revisionMode ? revision : article;
             openModal({
-                title: '审核文章',
-                subtitle: article.title,
+                title: revisionMode ? '审核修订' : '审核文章',
+                subtitle: source.title,
                 body: `
                     <div class="detail-meta">
                         <div><dt>分类</dt><dd>${esc(article.categoryName || '—')}</dd></div>
                         <div><dt>作者</dt><dd>${esc(article.authorName || '—')}</dd></div>
-                        <div><dt>提交时间</dt><dd>${fmt(article.updateTime)}</dd></div>
-                        <div><dt>状态</dt><dd>${articleBadge(article.status)}</dd></div>
+                        <div><dt>提交时间</dt><dd>${fmt(source.updateTime)}</dd></div>
+                        <div><dt>状态</dt><dd>${revisionMode ? '<span class="tag">修订待审核</span>' : articleBadge(article.status)}</dd></div>
                     </div>
-                    <p class="muted" style="line-height:1.7">${esc(article.summary || '无摘要')}</p>
-                    <div class="detail-content" style="max-height:240px;overflow:auto;padding:14px;background:#f8fafc;border-radius:10px">${esc(article.content)}</div>
+                    <p class="muted" style="line-height:1.7">${esc(source.summary || '无摘要')}</p>
+                    <div class="detail-content" style="max-height:240px;overflow:auto;padding:14px;background:#f8fafc;border-radius:10px">${esc(source.content)}</div>
                     <div class="field" style="margin-top:18px"><span>审核结论 *</span>
                         <div class="check-list">
-                            <label class="check-item"><input type="radio" name="audit-result" value="approve" checked> 审核通过</label>
+                            <label class="check-item"><input type="radio" name="audit-result" value="approve" checked> ${revisionMode ? '通过并替换线上内容' : '审核通过'}</label>
                             <label class="check-item"><input type="radio" name="audit-result" value="reject"> 驳回修改</label>
                         </div>
                     </div>
@@ -961,9 +1040,16 @@
                 const button = event.currentTarget;
                 setBusy(button, true);
                 try {
-                    await api(`/api/articles/${id}/audit`, {method: 'POST', body: {approved, remark}});
+                    const endpoint = revisionMode
+                        ? `/api/articles/${id}/revision/audit`
+                        : `/api/articles/${id}/audit`;
+                    await api(endpoint, {method: 'POST', body: {approved, remark}});
                     closeModal(true);
-                    toast(approved ? '审核通过' : '已驳回', 'success');
+                    if (revisionMode) {
+                        toast(approved ? '修订已通过，线上内容已替换' : '修订已驳回', 'success');
+                    } else {
+                        toast(approved ? '审核通过' : '已驳回', 'success');
+                    }
                     await loadArticles();
                 } catch (error) {
                     toast(error.message, 'error');
@@ -986,12 +1072,12 @@
         await loadTree();
         const rows = flattenTree(state.allTree);
         const manage = has('category:manage');
-        const enabled = rows.filter((node) => node.status === 1).length;
+        const enabled = rows.filter((node) => node.effectiveStatus === 1).length;
         $('#content').innerHTML = `
             <div class="toolbar">
                 <div class="toolbar-actions">${manage ? '<button class="btn btn-primary" id="new-category">＋ 新建顶级分类</button>' : ''}</div>
                 <div class="toolbar-actions">
-                    <span class="muted small">共 ${rows.length} 个节点 · 启用 ${enabled} 个 · 停用分类不可挂载新文章</span>
+                    <span class="muted small">共 ${rows.length} 个节点 · 有效启用 ${enabled} 个 · 父级停用时整棵子树不可用</span>
                     <button class="btn btn-ghost" id="refresh-categories">↻ 刷新</button>
                 </div>
             </div>
@@ -1003,7 +1089,11 @@
                         <tr class="category-tree-row">
                             <td><div class="tree-name" style="padding-left:${node._depth * 24}px">${node._depth ? '<span class="tree-branch">└</span>' : ''}<b>${esc(node.name)}</b>${node.children && node.children.length ? `<span class="tag">${node.children.length} 子级</span>` : ''}</div></td>
                             <td>${node.sort}</td>
-                            <td>${node.status === 1 ? '<span class="badge badge-published">启用</span>' : '<span class="badge badge-offline">停用</span>'}</td>
+                            <td>${node.status !== 1
+                                ? '<span class="badge badge-offline">停用</span>'
+                                : (node.effectiveStatus === 0
+                                    ? '<span class="badge badge-offline" title="父级分类已停用">继承停用</span>'
+                                    : '<span class="badge badge-published">启用</span>')}</td>
                             <td class="muted">${esc(node.description || '—')}</td>
                             <td class="cell-time">${fmt(node.createTime)}</td>
                             ${manage ? `<td><div class="action-group">
@@ -1037,7 +1127,7 @@
         const options = categoryOptions(state.allTree, node ? node.parentId : parentId, 0, exclude);
         openModal({
             title: node ? '编辑分类' : '新建分类',
-            subtitle: '分类支持多级树结构，停用后不可被新文章挂载',
+            subtitle: '分类支持多级树结构；父分类停用后，整棵子树不可挂载新文章且读者不可见',
             body: `<form class="form-grid">
                 <label class="field span-2"><span>分类名称 *</span><input id="cf-name" maxlength="50" value="${esc(node ? node.name : '')}" placeholder="2-50 个字符"></label>
                 <label class="field"><span>父分类</span><select id="cf-parent"><option value="0">（顶级分类）</option>${options}</select></label>
@@ -1076,7 +1166,11 @@
 
     async function toggleCategory(node) {
         const next = node.status === 1 ? 0 : 1;
-        if (!(await confirmDialog({title: next === 1 ? '启用分类' : '停用分类', message: `确定${next === 1 ? '启用' : '停用'}分类「${node.name}」吗？`, confirmText: next === 1 ? '启用' : '停用'}))) return;
+        const hasChildren = Boolean(node.children && node.children.length);
+        const message = next === 0 && hasChildren
+            ? `停用后其 ${node.children.length} 个子级分类也将不可用，确定继续吗？`
+            : `确定${next === 1 ? '启用' : '停用'}分类「${node.name}」吗？`;
+        if (!(await confirmDialog({title: next === 1 ? '启用分类' : '停用分类', message, confirmText: next === 1 ? '启用' : '停用'}))) return;
         try {
             await api(`/api/categories/${node.id}/status`, {method: 'PUT', body: {status: next}});
             toast('分类状态已更新', 'success');
@@ -1600,6 +1694,77 @@
         box.textContent = message;
         box.hidden = !message;
     }
+
+    function showRegisterPane(show) {
+        const registerForm = $('#register-form');
+        if (!registerForm) return;
+        $('#login-form').hidden = show;
+        $('#demo-accounts').hidden = show;
+        $('#login-switch').hidden = show;
+        registerForm.hidden = !show;
+        if (show) {
+            setTimeout(() => $('#reg-username').focus(), 50);
+        } else {
+            const box = $('#register-error');
+            if (box) {
+                box.hidden = true;
+                box.textContent = '';
+            }
+        }
+    }
+
+    $('#show-register')?.addEventListener('click', () => {
+        showLoginError('');
+        showRegisterPane(true);
+    });
+    $('#show-login')?.addEventListener('click', () => showRegisterPane(false));
+
+    $('#register-form')?.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const username = $('#reg-username').value.trim();
+        const nickname = $('#reg-nickname').value.trim();
+        const email = $('#reg-email').value.trim();
+        const password = $('#reg-password').value;
+        const box = $('#register-error');
+        const fail = (message) => {
+            box.textContent = message;
+            box.hidden = false;
+        };
+        box.hidden = true;
+        if (!/^[A-Za-z0-9_]{4,32}$/.test(username)) {
+            return fail('用户名须为 4-32 位字母、数字或下划线');
+        }
+        if (nickname.length < 2 || nickname.length > 20) {
+            return fail('昵称长度须为 2-20 个字符');
+        }
+        if (password.length < 8 || password.length > 32
+                || !/[A-Za-z]/.test(password) || !/\d/.test(password)) {
+            return fail('密码须为 8-32 位，且同时包含字母和数字');
+        }
+        if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+            return fail('邮箱格式不正确');
+        }
+        const button = $('#register-button');
+        setBusy(button, true, '提交中…');
+        try {
+            await api('/api/auth/register', {
+                method: 'POST',
+                auth: false,
+                body: {username, nickname, email: email || null, password}
+            });
+            toast('注册成功，请等待管理员审批', 'success');
+            $('#login-username').value = username;
+            $('#reg-username').value = '';
+            $('#reg-nickname').value = '';
+            $('#reg-email').value = '';
+            $('#reg-password').value = '';
+            showRegisterPane(false);
+        } catch (error) {
+            fail(error.message);
+        } finally {
+            setBusy(button, false);
+        }
+    });
 
     $('#login-form').addEventListener('submit', async (event) => {
         event.preventDefault();

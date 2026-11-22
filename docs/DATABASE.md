@@ -126,7 +126,8 @@ erDiagram
 | 5 | `sys_role_permission` | 角色-权限关联，唯一键 `(role_id, permission_id)` | 多对多中间表 |
 | 6 | `cms_category` | 多级内容分类，`parent_id=0` 为顶级 | 自关联 + 一对多文章 |
 | 7 | `cms_article` | 文章主体、状态、审核元数据、发布时间、乐观锁版本 | 归属分类/作者/审核人 |
-| 8 | `sys_oper_log` | 操作审计日志，记录脱敏参数与耗时 | 归属操作人（可为空） |
+| 8 | `cms_article_revision` | 已发布文章的修订草稿，每篇文章最多一条 | 归属文章 |
+| 9 | `sys_oper_log` | 操作审计日志，记录脱敏参数与耗时 | 归属操作人（可为空） |
 
 ## 3. 关键字段与约束
 
@@ -155,7 +156,8 @@ erDiagram
 ### 3.3 分类表 `cms_category`
 
 - `parent_id = 0` 表示顶级；父子关系在同一张表内自关联；
-- 同级分类名唯一由业务层校验（`parent_id + name`），避免数据库大小写/排序规则差异影响提示；
+- 同级分类名由业务层校验 + 数据库唯一索引双重保证：生成列 `active_name`（逻辑删除后为 NULL）+ 唯一键 `(parent_id, active_name)`，既拦住并发重复，又允许逻辑删除后重建同名分类；
+- 父分类停用时，整棵子树在业务上视为不可用（派生 `effectiveStatus`），不强制改写子分类自身状态；
 - `sort` 升序决定同级展示顺序；
 - 移动分类时检查“不能移动到自己或子孙节点下”，防止环；
 - 删除前校验子分类与文章引用；
@@ -181,7 +183,21 @@ erDiagram
 
 外键：`category_id → cms_category(id)`、`author_id → sys_user(id)`。采用默认 RESTRICT，配合业务层校验，避免误删被引用的分类/用户。
 
-### 3.5 操作日志表 `sys_oper_log`
+### 3.5 文章修订表 `cms_article_revision`
+
+| 字段 | 说明 |
+| --- | --- |
+| `article_id` | 文章 ID，唯一键 `uk_revision_article(article_id)`，每篇文章最多一条修订 |
+| `title` / `summary` / `content` / `category_id` | 待审核的修订内容 |
+| `status` | 0 修订草稿 / 1 待审核 / 2 审核通过 / 3 已驳回 |
+| `audit_remark` / `audit_by` / `audit_time` | 修订审核意见与审核人 |
+| `version` | 修订乐观锁版本 |
+
+- 审核通过后，修订字段整体覆盖 `cms_article` 并重新发布；驳回时主表内容保持不变；
+- 修订表不使用逻辑删除，撤销草稿时物理删除，以保证 `article_id` 唯一键可复用；
+- 外键 `article_id → cms_article(id) ON DELETE CASCADE`。
+
+### 3.6 操作日志表 `sys_oper_log`
 
 - `params` 存储序列化后的参数，长度 2000，密码字段已脱敏为 `******`；
 - `success` 为 1/0，失败时记录 `error_msg`（截断 1000）；
@@ -195,6 +211,7 @@ erDiagram
 | 用户状态 `UserStatus` | 0 禁用、1 正常、2 待审批 |
 | 通用启停 `EnableStatus` | 0 停用、1 启用 |
 | 文章状态 `ArticleStatus` | 0 草稿、1 待审核、2 审核通过、3 已驳回、4 已发布、5 已下架 |
+| 修订状态 `RevisionStatus` | 0 修订草稿、1 待审核、2 审核通过、3 已驳回 |
 | 日志结果 | 0 失败、1 成功 |
 
 ## 5. 种子数据

@@ -19,6 +19,9 @@ public class ArticleVO implements Serializable {
     private String authorName;
     private Integer status;
     private String statusText;
+    /** 已发布文章的修订状态；没有修订时为 null。 */
+    private Integer revisionStatus;
+    private String revisionStatusText;
     private String auditRemark;
     private LocalDateTime publishTime;
     private Integer viewCount;
@@ -96,6 +99,22 @@ public class ArticleVO implements Serializable {
 
     public void setStatusText(String statusText) {
         this.statusText = statusText;
+    }
+
+    public Integer getRevisionStatus() {
+        return revisionStatus;
+    }
+
+    public void setRevisionStatus(Integer revisionStatus) {
+        this.revisionStatus = revisionStatus;
+    }
+
+    public String getRevisionStatusText() {
+        return revisionStatusText;
+    }
+
+    public void setRevisionStatusText(String revisionStatusText) {
+        this.revisionStatusText = revisionStatusText;
     }
 
     public String getAuditRemark() {

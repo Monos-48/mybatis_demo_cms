@@ -18,6 +18,9 @@ public class CategoryVO implements Serializable {
     private Integer sort;
     private Integer status;
     private String statusText;
+    /** 自身及所有祖先均启用时为 1；用于表达“父级停用导致整棵子树不可用”。 */
+    private Integer effectiveStatus;
+    private String effectiveStatusText;
     private String description;
     private LocalDateTime createTime;
     private List<CategoryVO> children = new ArrayList<>();
@@ -68,6 +71,22 @@ public class CategoryVO implements Serializable {
 
     public void setStatusText(String statusText) {
         this.statusText = statusText;
+    }
+
+    public Integer getEffectiveStatus() {
+        return effectiveStatus;
+    }
+
+    public void setEffectiveStatus(Integer effectiveStatus) {
+        this.effectiveStatus = effectiveStatus;
+    }
+
+    public String getEffectiveStatusText() {
+        return effectiveStatusText;
+    }
+
+    public void setEffectiveStatusText(String effectiveStatusText) {
+        this.effectiveStatusText = effectiveStatusText;
     }
 
     public String getDescription() {

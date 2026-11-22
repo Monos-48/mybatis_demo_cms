@@ -13,6 +13,7 @@ SET FOREIGN_KEY_CHECKS = 0;
 DROP TABLE IF EXISTS sys_oper_log;
 DROP TABLE IF EXISTS sys_role_permission;
 DROP TABLE IF EXISTS sys_user_role;
+DROP TABLE IF EXISTS cms_article_revision;
 DROP TABLE IF EXISTS cms_article;
 DROP TABLE IF EXISTS cms_category;
 DROP TABLE IF EXISTS sys_permission;
@@ -125,6 +126,28 @@ CREATE TABLE cms_article (
     CONSTRAINT fk_article_category FOREIGN KEY (category_id) REFERENCES cms_category (id),
     CONSTRAINT fk_article_author FOREIGN KEY (author_id) REFERENCES sys_user (id)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '文章内容';
+
+CREATE TABLE cms_article_revision (
+    id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',
+    article_id BIGINT NOT NULL COMMENT '文章 ID',
+    title VARCHAR(100) NOT NULL COMMENT '修订标题',
+    summary VARCHAR(500) NULL COMMENT '修订摘要',
+    content LONGTEXT NOT NULL COMMENT '修订正文',
+    category_id BIGINT NOT NULL COMMENT '修订分类',
+    status TINYINT NOT NULL DEFAULT 0 COMMENT '0 草稿 1 待审核 2 审核通过 3 已驳回',
+    audit_remark VARCHAR(500) NULL COMMENT '审核意见',
+    audit_by BIGINT NULL COMMENT '审核人',
+    audit_time DATETIME NULL COMMENT '审核时间',
+    version INT NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
+    create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    create_by BIGINT NULL COMMENT '创建人',
+    update_by BIGINT NULL COMMENT '更新人',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_revision_article (article_id),
+    KEY idx_revision_status (status),
+    CONSTRAINT fk_revision_article FOREIGN KEY (article_id) REFERENCES cms_article (id) ON DELETE CASCADE
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '文章修订草稿';
 
 CREATE TABLE sys_oper_log (
     id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',

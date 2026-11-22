@@ -246,6 +246,19 @@ GET /api/articles?pageNum=1&pageSize=10&status=4&categoryId=1&sortField=publishT
 
 数量 1–100；批量操作先整体校验状态，再逐条更新并写入操作日志；任一状态不合法整批回滚。
 
+### 3.10 已发布文章修订
+
+| 方法 | 路径 | 权限 | 说明 |
+| --- | --- | --- | --- |
+| GET | `/api/articles/{id}/revision` | `article:list` | 获取当前修订（作者或管理者） |
+| PUT | `/api/articles/{id}/revision` | `article:edit` | 保存修订草稿；`submitForReview=true` 直接提交审核 |
+| DELETE | `/api/articles/{id}/revision` | `article:edit` | 撤销草稿或已驳回修订 |
+| POST | `/api/articles/{id}/revision/submit` | `article:submit` | 提交修订审核 |
+| POST | `/api/articles/{id}/revision/audit` | `article:audit` | 审核修订；通过后替换线上正文 |
+
+修订请求体与编辑文章一致：`title`、`summary`、`content`、`categoryId`、`version`、`submitForReview`。
+修订审核通过前，公开读者接口仍返回主表中的旧版本；通过后整体替换并重新发布。
+
 ## 4. 分类接口
 
 | 方法 | 路径 | 权限 | 说明 |
@@ -399,6 +412,7 @@ curl -b cookies.txt -H 'Content-Type: application/json' \
 | --- | --- | --- | --- | --- |
 | 文章列表/详情 | ✓ | ✓ | ✓ | ✓ |
 | 新建/编辑/删除/提交 | ✓ | ✓ | ✓（仅自己的草稿/驳回） | ✗ |
+| 已发布文章修订 | ✓ | ✓ | ✓（仅自己的文章） | ✗ |
 | 审核/发布/下架 | ✓ | ✓ | ✗ | ✗ |
 | 分类查看 | ✓ | ✓ | ✓ | ✓ |
 | 分类管理 | ✓ | ✓ | ✗ | ✗ |
@@ -407,3 +421,16 @@ curl -b cookies.txt -H 'Content-Type: application/json' \
 | 操作日志 | ✓ | ✗ | ✗ | ✗ |
 
 > 前端菜单会按权限隐藏，但服务端 AOP 才是最终安全边界；即使绕过页面直接请求接口，缺少权限码也会返回 403。
+
+## 10. 公开读者接口（无需登录）
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/public/articles` | 已发布文章分页，支持 `title`、`categoryId`、`pageNum`、`pageSize`、`sortField`、`sortOrder` |
+| GET | `/api/public/articles/{id}` | 已发布文章详情，并原子累加 `view_count`；非已发布返回 404 |
+| GET | `/api/public/categories/tree` | 仅返回自身及祖先均启用的分类树 |
+
+- 仅返回 `status=4` 且分类有效的文章；
+- 公开列表不暴露 `status`、`authorId`、`version` 等内部字段；
+- 管理端详情 `/api/articles/{id}` 不累加阅读量；
+- 读者页面：`/reader.html`。

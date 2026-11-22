@@ -21,10 +21,12 @@
                a.create_time,
                a.update_time,
                c.name AS category_name,
-               u.nickname AS author_name
+               u.nickname AS author_name,
+               r.status AS revision_status
         FROM cms_article a
         LEFT JOIN cms_category c ON c.id = a.category_id
         LEFT JOIN sys_user u ON u.id = a.author_id
+        LEFT JOIN cms_article_revision r ON r.article_id = a.id
         WHERE a.deleted = 0
         <if test="q.title != null and q.title != ''">
             AND a.title LIKE CONCAT('%', #{q.title}, '%')
@@ -88,5 +90,68 @@
         WHERE a.id = #{id}
           AND a.deleted = 0
     </select>
+
+    <!-- 读者端：只返回已发布且分类有效的文章，不暴露内部字段 -->
+    <select id="selectPublicArticlePage" resultType="com.example.cms.vo.PublicArticleVO">
+        SELECT a.id,
+               a.title,
+               a.summary,
+               c.name AS category_name,
+               u.nickname AS author_name,
+               a.publish_time,
+               a.view_count
+        FROM cms_article a
+        LEFT JOIN cms_category c ON c.id = a.category_id
+        LEFT JOIN sys_user u ON u.id = a.author_id
+        WHERE a.deleted = 0
+          AND a.status = 4
+          AND a.category_id IN
+          <foreach collection="categoryIds" item="categoryId" open="(" separator="," close=")">
+              #{categoryId}
+          </foreach>
+        <if test="q.title != null and q.title != ''">
+            AND a.title LIKE CONCAT('%', #{q.title}, '%')
+        </if>
+        ORDER BY
+        <choose>
+            <when test="q.sortField == 'viewCount'">a.view_count</when>
+            <when test="q.sortField == 'title'">a.title</when>
+            <otherwise>a.publish_time</otherwise>
+        </choose>
+        <choose>
+            <when test="q.sortOrder == 'asc'">ASC</when>
+            <otherwise>DESC</otherwise>
+        </choose>
+        , a.id DESC
+    </select>
+
+    <select id="selectPublicDetailById" resultType="com.example.cms.vo.PublicArticleDetailVO">
+        SELECT a.id,
+               a.title,
+               a.summary,
+               a.content,
+               c.name AS category_name,
+               u.nickname AS author_name,
+               a.publish_time,
+               a.view_count
+        FROM cms_article a
+        LEFT JOIN cms_category c ON c.id = a.category_id
+        LEFT JOIN sys_user u ON u.id = a.author_id
+        WHERE a.id = #{id}
+          AND a.deleted = 0
+          AND a.status = 4
+          AND a.category_id IN
+          <foreach collection="categoryIds" item="categoryId" open="(" separator="," close=")">
+              #{categoryId}
+          </foreach>
+    </select>
+
+    <update id="incrementViewCount">
+        UPDATE cms_article
+        SET view_count = view_count + 1
+        WHERE id = #{id}
+          AND status = 4
+          AND deleted = 0
+    </update>
 
 </mapper>

@@ -16,9 +16,12 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 分类树业务实现：维护父子关系、同级重名校验、删除悬挂引用校验。
@@ -39,30 +42,121 @@ public class CategoryServiceImpl implements CategoryService {
         List<CmsCategory> categories = categoryMapper.selectList(new LambdaQueryWrapper<CmsCategory>()
                 .orderByAsc(CmsCategory::getSort)
                 .orderByAsc(CmsCategory::getId));
+        Map<Long, CmsCategory> byId = new HashMap<>();
+        for (CmsCategory category : categories) {
+            byId.put(category.getId(), category);
+        }
+        Map<Long, Boolean> effective = computeEffective(byId);
+
         Map<Long, CategoryVO> map = new LinkedHashMap<>();
         for (CmsCategory category : categories) {
-            if (enabledOnly && (category.getStatus() == null
-                    || category.getStatus() != EnableStatus.ENABLED.getCode())) {
+            boolean enabled = Boolean.TRUE.equals(effective.get(category.getId()));
+            if (enabledOnly && !enabled) {
                 continue;
             }
-            map.put(category.getId(), toVO(category));
+            CategoryVO vo = toVO(category);
+            vo.setEffectiveStatus(enabled ? 1 : 0);
+            vo.setEffectiveStatusText(enabled ? "启用" : "停用（含父级停用）");
+            map.put(vo.getId(), vo);
         }
 
         List<CategoryVO> roots = new ArrayList<>();
         for (CategoryVO node : map.values()) {
-            CategoryVO parent = map.get(node.getParentId());
-            if (node.getParentId() == null || node.getParentId() == 0L || parent == null) {
+            if (node.getParentId() == null || node.getParentId() == 0L) {
                 roots.add(node);
-            } else {
-                parent.getChildren().add(node);
+                continue;
             }
+            CategoryVO parent = map.get(node.getParentId());
+            if (parent != null) {
+                parent.getChildren().add(node);
+            } else if (!enabledOnly) {
+                // 管理端树：父分类被逻辑删除时避免丢数据，挂到根级展示
+                roots.add(node);
+            }
+            // enabledOnly 下父级不可用意味着整棵子树不可用，不提升为根节点
         }
         return roots;
     }
 
     @Override
     public CategoryVO getDetail(Long id) {
-        return toVO(requireCategory(id));
+        CmsCategory category = requireCategory(id);
+        CategoryVO vo = toVO(category);
+        boolean enabled = isEffectivelyEnabled(id);
+        vo.setEffectiveStatus(enabled ? 1 : 0);
+        vo.setEffectiveStatusText(enabled ? "启用" : "停用（含父级停用）");
+        return vo;
+    }
+
+    @Override
+    public boolean isEffectivelyEnabled(Long categoryId) {
+        if (categoryId == null) {
+            return false;
+        }
+        Long cursor = categoryId;
+        Set<Long> visited = new HashSet<>();
+        while (cursor != null && cursor != 0L && visited.add(cursor)) {
+            CmsCategory category = categoryMapper.selectById(cursor);
+            if (category == null || category.getStatus() == null
+                    || category.getStatus() != EnableStatus.ENABLED.getCode()) {
+                return false;
+            }
+            cursor = category.getParentId();
+        }
+        // 走到 0/空说明祖先链全部启用；出现环则视为不可用
+        return cursor == null || cursor == 0L;
+    }
+
+    @Override
+    public Set<Long> effectiveEnabledCategoryIds() {
+        List<CmsCategory> categories = categoryMapper.selectList(null);
+        Map<Long, CmsCategory> byId = new HashMap<>();
+        for (CmsCategory category : categories) {
+            byId.put(category.getId(), category);
+        }
+        Map<Long, Boolean> effective = computeEffective(byId);
+        Set<Long> result = new HashSet<>();
+        for (Map.Entry<Long, Boolean> entry : effective.entrySet()) {
+            if (Boolean.TRUE.equals(entry.getValue())) {
+                result.add(entry.getKey());
+            }
+        }
+        return result;
+    }
+
+    /**
+     * 批量计算分类是否有效启用：父级停用会传递到整个子树。
+     */
+    private Map<Long, Boolean> computeEffective(Map<Long, CmsCategory> byId) {
+        Map<Long, Boolean> memo = new HashMap<>();
+        for (Long id : byId.keySet()) {
+            resolveEffective(id, byId, memo, new HashSet<>());
+        }
+        return memo;
+    }
+
+    private boolean resolveEffective(Long id, Map<Long, CmsCategory> byId,
+                                     Map<Long, Boolean> memo, Set<Long> visiting) {
+        Boolean cached = memo.get(id);
+        if (cached != null) {
+            return cached;
+        }
+        CmsCategory category = byId.get(id);
+        if (category == null || category.getStatus() == null
+                || category.getStatus() != EnableStatus.ENABLED.getCode()) {
+            memo.put(id, false);
+            return false;
+        }
+        if (!visiting.add(id)) {
+            memo.put(id, false);
+            return false;
+        }
+        Long parentId = category.getParentId();
+        boolean enabled = parentId == null || parentId == 0L
+                || resolveEffective(parentId, byId, memo, visiting);
+        visiting.remove(id);
+        memo.put(id, enabled);
+        return enabled;
     }
 
     @Override

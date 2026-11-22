@@ -2,6 +2,7 @@
 DROP TABLE IF EXISTS sys_oper_log;
 DROP TABLE IF EXISTS sys_role_permission;
 DROP TABLE IF EXISTS sys_user_role;
+DROP TABLE IF EXISTS cms_article_revision;
 DROP TABLE IF EXISTS cms_article;
 DROP TABLE IF EXISTS cms_category;
 DROP TABLE IF EXISTS sys_permission;
@@ -113,6 +114,28 @@ CREATE INDEX idx_article_title ON cms_article (title);
 CREATE INDEX idx_article_category_status ON cms_article (category_id, status);
 CREATE INDEX idx_article_publish_time ON cms_article (publish_time);
 CREATE INDEX idx_article_author ON cms_article (author_id);
+
+CREATE TABLE cms_article_revision (
+    id BIGINT NOT NULL AUTO_INCREMENT,
+    article_id BIGINT NOT NULL,
+    title VARCHAR(100) NOT NULL,
+    summary VARCHAR(500),
+    content CLOB NOT NULL,
+    category_id BIGINT NOT NULL,
+    status TINYINT NOT NULL DEFAULT 0,
+    audit_remark VARCHAR(500),
+    audit_by BIGINT,
+    audit_time DATETIME,
+    version INT NOT NULL DEFAULT 0,
+    create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    create_by BIGINT,
+    update_by BIGINT,
+    PRIMARY KEY (id),
+    CONSTRAINT fk_revision_article FOREIGN KEY (article_id) REFERENCES cms_article (id) ON DELETE CASCADE
+);
+CREATE UNIQUE INDEX uk_revision_article ON cms_article_revision (article_id);
+CREATE INDEX idx_revision_status ON cms_article_revision (status);
 
 CREATE TABLE sys_oper_log (
     id BIGINT NOT NULL AUTO_INCREMENT,
