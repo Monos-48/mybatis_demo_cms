@@ -48,6 +48,9 @@ spring:
   web:
     resources:
       add-mappings: true
+      cache:
+        cachecontrol:
+          no-cache: true
 
 mybatis-plus:
   mapper-locations: classpath*:/mapper/**/*.xml

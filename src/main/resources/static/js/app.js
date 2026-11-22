@@ -244,7 +244,11 @@
         $('#login-screen').classList.remove('hidden');
         setSidebar(false);
         hideBoot();
-        setTimeout(() => $('#login-username').focus(), 50);
+        if (window.location.hash === '#register') {
+            showRegisterPane(true);
+        } else {
+            setTimeout(() => $('#login-username').focus(), 50);
+        }
     }
 
     function showApp() {
@@ -1716,8 +1720,16 @@
     $('#show-register')?.addEventListener('click', () => {
         showLoginError('');
         showRegisterPane(true);
+        if (window.location.hash !== '#register') {
+            history.replaceState(null, '', '#register');
+        }
     });
-    $('#show-login')?.addEventListener('click', () => showRegisterPane(false));
+    $('#show-login')?.addEventListener('click', () => {
+        showRegisterPane(false);
+        if (window.location.hash === '#register') {
+            history.replaceState(null, '', window.location.pathname + window.location.search);
+        }
+    });
 
     $('#register-form')?.addEventListener('submit', async (event) => {
         event.preventDefault();
@@ -1729,6 +1741,7 @@
         const fail = (message) => {
             box.textContent = message;
             box.hidden = false;
+            toast(message, 'error');
         };
         box.hidden = true;
         if (!/^[A-Za-z0-9_]{4,32}$/.test(username)) {
@@ -1759,6 +1772,9 @@
             $('#reg-email').value = '';
             $('#reg-password').value = '';
             showRegisterPane(false);
+            if (window.location.hash === '#register') {
+                history.replaceState(null, '', window.location.pathname + window.location.search);
+            }
         } catch (error) {
             fail(error.message);
         } finally {

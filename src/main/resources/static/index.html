@@ -8,7 +8,8 @@
     <title>Atlas CMS · 内容管理系统</title>
     <!-- 全部使用相对路径：部署到 Tomcat 的非根 context path 时也能正确加载。 -->
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
-    <link rel="stylesheet" href="css/app.css">
+    <!-- 静态资源版本号：前端发布时递增 ?v=，避免浏览器继续使用旧脚本。 -->
+    <link rel="stylesheet" href="css/app.css?v=1.1.0">
 </head>
 <body>
 <div id="boot-screen" class="boot-screen">
@@ -142,6 +143,6 @@
 <div id="confirm-root"></div>
 <div id="toast-root" role="status" aria-live="polite"></div>
 <noscript><div class="noscript">本系统需要启用 JavaScript 才能使用，请在浏览器设置中开启后刷新页面。</div></noscript>
-<script src="js/app.js"></script>
+<script src="js/app.js?v=1.1.0"></script>
 </body>
 </html>

@@ -7,7 +7,8 @@
     <meta name="description" content="Atlas CMS 读者端：浏览公开的已发布文章。">
     <title>Atlas CMS · 读者端</title>
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
-    <link rel="stylesheet" href="css/reader.css">
+    <!-- 静态资源版本号：前端发布时递增 ?v=，避免浏览器继续使用旧脚本。 -->
+    <link rel="stylesheet" href="css/reader.css?v=1.1.0">
 </head>
 <body>
 <header class="reader-header">
@@ -17,6 +18,7 @@
     </a>
     <div class="reader-header-actions">
         <span class="reader-status" id="reader-status">公开阅读</span>
+        <a class="reader-link" href="index.html#register">注册账号</a>
         <a class="reader-link" href="index.html">管理后台登录</a>
     </div>
 </header>
@@ -55,6 +57,6 @@
 </main>
 
 <footer class="reader-footer">Atlas CMS · 公开阅读接口 /api/public</footer>
-<script src="js/reader.js"></script>
+<script src="js/reader.js?v=1.1.0"></script>
 </body>
 </html>
